@@ -54,15 +54,38 @@ if ($eng) {
 """
 
 
+# Above 100% but within this bound is treated as genuine counter overshoot
+# (several engine contexts billing slightly overlapping time) and clamped.
+# Anything beyond it isn't a percentage at all and is discarded -- see
+# _clamp_percent.
+_UTIL_OVERSHOOT_CEILING = 150.0
+
+
 def _clamp_percent(value) -> float | None:
-    """Utilization is a share of wall-clock time and cannot exceed 100%.
-    Clamp rather than surface a physically impossible number."""
+    """Normalise a GPU utilization reading, or discard it as unusable.
+
+    Utilization is a share of wall-clock time, so >100% is impossible. Small
+    overshoots are routine and get clamped. But these are uint64 performance
+    counters: if a sampled process exits mid-interval, or the counter's time
+    base resets, the formatted delta goes negative and wraps into an enormous
+    number -- a real observed reading was 696534349797534.
+
+    Clamping that to 100 would be worse than dropping it, because it silently
+    asserts "the GPU was pegged" when the truth is the sample is garbage. A
+    corrupt reading returns None so it can be reported as unavailable rather
+    than as a confident wrong answer.
+    """
     if value is None:
         return None
     try:
-        return max(0.0, min(100.0, float(value)))
+        val = float(value)
     except (TypeError, ValueError):
         return None
+    if val != val or val in (float("inf"), float("-inf")):  # NaN / inf
+        return None
+    if val < 0 or val > _UTIL_OVERSHOOT_CEILING:
+        return None
+    return min(100.0, val)
 
 
 def _probe_nvidia() -> dict | None:

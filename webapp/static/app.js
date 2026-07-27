@@ -955,6 +955,23 @@ const LIVE_METRICS = [
   { key: "disk_write_mb_s", label: "Disk Write", unit: "MB/s", minSpan: 1 },
 ];
 
+
+/**
+ * Sanity-gate a stored GPU utilization reading before displaying it.
+ *
+ * Windows' per-process GPU counters are uint64: if a sampled process exits
+ * mid-interval the formatted delta wraps into an enormous value (one saved
+ * run recorded 696534349797534%). The probe now discards those, but runs
+ * recorded before that fix still hold the bad number, and rendering it --
+ * or clamping it to a confident-looking 100% -- would both be lying about
+ * what was measured. Returns null so the UI shows "n/a" instead.
+ */
+function safeGpuUtil(value) {
+  if (value == null || !Number.isFinite(value)) return null;
+  if (value < 0 || value > 150) return null;
+  return Math.min(100, value);
+}
+
 function buildSparklinePath(values, width, height, yMin, yMax) {
   if (values.length < 2) return "";
   const span = yMax - yMin || 1;
@@ -1335,7 +1352,7 @@ function renderRunDetail(data, suiteFilterVal, modelFilterVal) {
       const resource = suite.resource_usage || {};
       const vram = resource.vram_delta_mb;
       const vramTotal = resource.peak_vram_mb_total;
-      const gpuUtil = resource.peak_gpu_util_percent;
+      const gpuUtil = safeGpuUtil(resource.peak_gpu_util_percent);
       const pillClass = suite.pass_rate >= 0.7 ? "pass" : "fail";
       const icon = suite.pass_rate >= 0.7 ? "✓" : "✗";
       const truncatedCount = (suite.problems || []).filter((p) => p.truncated).length;
@@ -2405,7 +2422,7 @@ function buildFullComparisonTable(series, categories, getSuite, runs) {
         ramDelta: resource.ram_delta_gb,
         vramDelta: resource.vram_delta_mb,
         vramTotal: resource.peak_vram_mb_total,
-        gpuUtil: resource.peak_gpu_util_percent,
+        gpuUtil: safeGpuUtil(resource.peak_gpu_util_percent),
         peakCpu: resource.peak_cpu_percent,
         suiteData: suite,
       });
@@ -2540,6 +2557,7 @@ function buildFullComparisonTable(series, categories, getSuite, runs) {
 
     const tdGpuUtil = document.createElement("td");
     tdGpuUtil.textContent = r.gpuUtil == null ? "n/a" : `${fmtNum(r.gpuUtil, 0)}%`;
+    if (r.gpuUtil == null) tdGpuUtil.title = "No usable GPU utilization reading for this suite (no GPU probe available, or the counter returned an out-of-range value that was discarded rather than guessed at).";
     row.appendChild(tdGpuUtil);
 
     const tdRam = document.createElement("td");
