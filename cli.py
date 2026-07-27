@@ -13,7 +13,7 @@ import webbrowser
 from pathlib import Path
 
 from localbench import report
-from localbench.config import load_config
+from localbench.config import bootstrap_config, load_config
 from localbench.runner import run_benchmark
 
 ALL_SUITES = [
@@ -42,6 +42,8 @@ def _make_stdout_unicode_safe() -> None:
 
 def cmd_run(args: argparse.Namespace) -> None:
     _make_stdout_unicode_safe()
+    if bootstrap_config(args.config):
+        print(f"created {args.config} from config.example.yaml -- edit it to point at your runtime")
     config = load_config(args.config)
 
     if args.model:
@@ -97,6 +99,10 @@ def cmd_run(args: argparse.Namespace) -> None:
 
 def cmd_serve(args: argparse.Namespace) -> None:
     import uvicorn
+
+    _make_stdout_unicode_safe()
+    if bootstrap_config():
+        print("created config.yaml from config.example.yaml -- edit it, or use the Settings tab")
 
     if not args.no_browser:
         webbrowser.open(f"http://localhost:{args.port}")

@@ -10,6 +10,20 @@ import yaml
 EXAMPLE_PATH = Path("config.example.yaml")
 
 
+def bootstrap_config(path: str | Path = "config.yaml") -> bool:
+    """Create config.yaml from the tracked template on first run.
+
+    config.yaml is gitignored (it is per-user), so a fresh clone never has
+    one. Making the user copy it by hand is a step that exists only because
+    of how the repo is laid out, not because it needs a decision from them --
+    the template is a working default. Returns True if a file was created."""
+    path = Path(path)
+    if path.exists() or not EXAMPLE_PATH.exists():
+        return False
+    path.write_text(EXAMPLE_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+    return True
+
+
 def load_config(path: str | Path = "config.yaml") -> dict:
     path = Path(path)
     if not path.exists():

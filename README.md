@@ -44,34 +44,51 @@ A seventh, opt-in **frontier_graded** suite exists for open-ended tasks that
 can't be graded deterministically (see below) — it's never mixed into the
 six deterministic suites' scoring.
 
-## Setup
+## Install
+
+Requires **Python 3.11+** and a local runtime already serving an
+OpenAI-compatible API (LM Studio, Ollama, llama.cpp, vLLM...).
 
 ```bash
+git clone https://github.com/YOUR_USER/taskmatch-ai && cd taskmatch-ai
+pip install -r requirements.txt && python cli.py serve
+```
+
+That's it — the dashboard opens at `http://localhost:8000`. On first run
+`config.yaml` is created for you from `config.example.yaml`, and everything
+else (runtime URL, which models, which suites) is set from the **Settings**
+and **New Run** tabs. No file editing required to get going.
+
+<details>
+<summary>Prefer a virtualenv (recommended)</summary>
+
+```bash
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-cp config.example.yaml config.yaml     # Windows: copy config.example.yaml config.yaml
+python cli.py serve
 ```
+</details>
 
-`config.yaml` is **gitignored on purpose** — it holds your own runtime URL,
-model list, judge choice and (optionally) a real path from your disk, none of
-which belongs in a shared repo. Only `config.example.yaml` is tracked, so
-your working config can never be pushed by accident.
+`config.yaml` is **gitignored on purpose** — it holds your runtime URL, model
+list, judge choice and (optionally) a real path from your disk. Only
+`config.example.yaml` is tracked, so your working config can never be pushed
+by accident.
 
-Edit `config.yaml`:
+## Platform support
 
-```yaml
-runtime:
-  base_url: "http://localhost:1234/v1"   # your LM Studio / Ollama / llama.cpp endpoint
+| | Benchmarks & dashboard | GPU memory / utilization |
+|---|---|---|
+| **Windows** | full | any vendor — AMD, Intel, NVIDIA (via OS GPU counters) |
+| **Linux** | full | NVIDIA only (`nvidia-smi`) |
+| **macOS** | full | not available |
 
-models:
-  - name: "your-model-name"
-    switch:
-      load_cmd: 'lms load "{model}" -y --gpu max'   # LM Studio's CLI; omit for manual switching
-      unload_cmd: "lms unload --all"
-```
-
-Or skip hand-editing the file entirely — the dashboard's **Settings** tab
-can change the runtime URL, and its **New Run** tab can detect models
-directly from your runtime's `/v1/models` endpoint.
+Every suite, the scoring, the reports and the whole dashboard are pure Python
+and work identically everywhere. Only *GPU* telemetry is platform-dependent:
+where no probe works it is reported as `not captured` rather than guessed, and
+CPU/RAM/disk monitoring works on all three. Nothing crashes or degrades
+silently — verified by running the hardware and GPU probes under simulated
+Linux and macOS.
 
 Models are benchmarked **strictly sequentially** — one fully loaded and
 tested before the next is loaded — because these are large models on
