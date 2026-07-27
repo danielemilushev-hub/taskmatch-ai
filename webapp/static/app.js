@@ -372,7 +372,145 @@ async function loadConfig() {
     state.config.suites,
     state.selectedSuites
   );
+  await loadFrontierJudgeCard();
 }
+
+async function loadFrontierJudgeCard() {
+  const card = document.getElementById("frontier-judge-card");
+  const disabledNote = document.getElementById("frontier-judge-disabled-note");
+  try {
+    const settings = await api("/api/settings");
+    state.judgeSettings = settings.judge;
+    state.judgeKeys = settings.keys;
+    const anyKeySet = Object.values(settings.keys).some(Boolean);
+    if (settings.judge.enabled && anyKeySet) {
+      card.style.display = "block";
+      disabledNote.style.display = "none";
+      const provider = settings.judge.provider || "anthropic";
+      document.getElementById("run-judge-provider").value = provider;
+      document.getElementById("run-judge-model").value = settings.judge.model || "";
+      await Promise.all([loadJudgeModelOptions(provider), updateFrontierJudgeInfo()]);
+    } else {
+      card.style.display = "none";
+      disabledNote.style.display = "block";
+    }
+  } catch {
+    card.style.display = "none";
+    disabledNote.style.display = "none";
+  }
+}
+
+async function updateFrontierJudgeInfo() {
+  const provider = document.getElementById("run-judge-provider").value;
+  const model = document.getElementById("run-judge-model").value.trim();
+  const includeEl = document.getElementById("include-frontier-graded");
+  const detailEl = document.getElementById("frontier-judge-detail");
+  const estimateEl = document.getElementById("frontier-judge-estimate");
+  const numTasks = state.judgeSettings?.num_tasks ?? 6;
+  const passThreshold = state.judgeSettings?.pass_threshold ?? 7;
+
+  const hasKey = !!(state.judgeKeys && state.judgeKeys[provider]);
+  if (!hasKey) {
+    includeEl.checked = false;
+    includeEl.disabled = true;
+    detailEl.textContent = `No API key set for ${PROVIDER_LABELS[provider] || provider} -- add one in Settings to use it as the judge.`;
+    estimateEl.textContent = "";
+    return;
+  }
+  includeEl.disabled = false;
+  detailEl.textContent =
+    `${numTasks} task(s), pass threshold ${passThreshold}/10 -- exactly ${numTasks * 2} paid API calls ` +
+    `(${numTasks} to generate tasks + ${numTasks} to grade responses). Generates its own tasks and grades this ` +
+    `model's responses; kept separate from the deterministic pass rates. See TASK_SPEC.md.`;
+
+  const costEl = document.getElementById("frontier-judge-cost");
+  if (!model) {
+    estimateEl.textContent = "";
+    costEl.textContent = "";
+    return;
+  }
+  estimateEl.textContent = "Checking for time estimate from a previous run with this judge...";
+  costEl.textContent = "";
+  try {
+    const history = await api(`/api/settings/judge/history?provider=${encodeURIComponent(provider)}&model=${encodeURIComponent(model)}`);
+    if (history.found) {
+      const totalSeconds = history.avg_seconds_per_task * numTasks;
+      estimateEl.textContent =
+        `Estimated duration: ~${fmtDuration(totalSeconds)}, based on ${fmtNum(history.avg_seconds_per_task, 1)}s/task ` +
+        `observed in a previous run (${history.run_id}) with this same judge. Actual time varies with prompt/response length.`;
+    } else {
+      estimateEl.textContent =
+        "No previous run with this exact provider/model yet -- duration can't be estimated until after the first run. " +
+        "Task and call counts above are exact regardless.";
+    }
+  } catch {
+    estimateEl.textContent = "";
+  }
+
+  try {
+    const cost = await api(
+      `/api/settings/judge/cost-estimate?provider=${encodeURIComponent(provider)}&model=${encodeURIComponent(model)}&num_tasks=${numTasks}`
+    );
+    if (cost.available) {
+      costEl.textContent =
+        `Estimated cost: ~$${cost.total_cost_usd} (OpenRouter's live pricing: $${cost.prompt_rate_per_1m}/$${cost.completion_rate_per_1m} per 1M ` +
+        `prompt/completion tokens, applied to real token usage from run ${cost.based_on_run}).`;
+    } else {
+      costEl.textContent = cost.reason;
+    }
+  } catch {
+    costEl.textContent = "";
+  }
+}
+
+async function loadJudgeModelOptions(provider, datalistId = "run-judge-model-options", statusId = "frontier-judge-model-status") {
+  const datalist = document.getElementById(datalistId);
+  const statusEl = document.getElementById(statusId);
+  datalist.innerHTML = "";
+  statusEl.textContent = "Loading available models...";
+  try {
+    const { models } = await api(`/api/settings/judge/models?provider=${encodeURIComponent(provider)}`);
+    models.forEach((m) => {
+      const opt = document.createElement("option");
+      opt.value = m;
+      datalist.appendChild(opt);
+    });
+    statusEl.textContent = models.length
+      ? `${models.length} model(s) available from ${PROVIDER_LABELS[provider] || provider} -- start typing to see suggestions.`
+      : `Could not fetch a live model list for ${PROVIDER_LABELS[provider] || provider} -- type the model id manually.`;
+  } catch {
+    statusEl.textContent = `Could not fetch a live model list for ${PROVIDER_LABELS[provider] || provider} -- type the model id manually.`;
+  }
+}
+
+async function onJudgeProviderChange() {
+  const provider = document.getElementById("run-judge-provider").value;
+  const modelInput = document.getElementById("run-judge-model");
+  // Switching provider invalidates whatever model string was there before
+  // (e.g. an Anthropic model id left in the field after switching to
+  // Gemini) -- restore the saved default only if it's for this exact
+  // provider, otherwise clear it so a stale/mismatched value is never
+  // silently submitted.
+  modelInput.value = state.judgeSettings?.provider === provider ? (state.judgeSettings.model || "") : "";
+  await Promise.all([loadJudgeModelOptions(provider), updateFrontierJudgeInfo()]);
+}
+
+function fmtDuration(seconds) {
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  const minutes = Math.floor(seconds / 60);
+  const rem = Math.round(seconds % 60);
+  return `${minutes}m ${rem}s`;
+}
+
+document.getElementById("run-judge-provider")?.addEventListener("change", onJudgeProviderChange);
+document.getElementById("run-judge-model")?.addEventListener("change", updateFrontierJudgeInfo);
+
+document.querySelectorAll('[data-view-link]').forEach((link) => {
+  link.addEventListener("click", (e) => {
+    e.preventDefault();
+    document.querySelector(`[data-view="${link.dataset.viewLink}"]`)?.click();
+  });
+});
 
 // Attach Suite Selection Controls
 const suiteSelectAllBtn = document.getElementById("suite-select-all");
@@ -439,6 +577,20 @@ document.getElementById("detect-models").addEventListener("click", async () => {
 });
 
 document.getElementById("start-run").addEventListener("click", async () => {
+  const includeFrontierEl = document.getElementById("include-frontier-graded");
+  const runFrontierGraded = !!(includeFrontierEl && includeFrontierEl.checked);
+  const judgeProvider = document.getElementById("run-judge-provider")?.value;
+  const judgeModel = document.getElementById("run-judge-model")?.value.trim();
+  if (runFrontierGraded) {
+    const numTasks = state.judgeSettings?.num_tasks ?? "?";
+    const proceed = confirm(
+      `This will also run the frontier-graded suite: ${numTasks} task(s) sent to ` +
+      `${judgeProvider}/${judgeModel || "?"} for generation AND grading ` +
+      `(${typeof numTasks === "number" ? numTasks * 2 : "2x"} paid API calls). This is non-deterministic and costs real money. Continue?`
+    );
+    if (!proceed) return;
+  }
+
   const btn = document.getElementById("start-run");
   btn.disabled = true;
   document.getElementById("run-progress").style.display = "block";
@@ -450,6 +602,8 @@ document.getElementById("start-run").addEventListener("click", async () => {
       body: JSON.stringify({
         models: Array.from(state.selectedModels),
         suites: Array.from(state.selectedSuites),
+        run_frontier_graded: runFrontierGraded,
+        judge_override: runFrontierGraded ? { provider: judgeProvider, model: judgeModel } : undefined,
       }),
     });
     state.activeRunId = run_id;
@@ -493,6 +647,7 @@ function pollRun() {
     }
     document.getElementById("run-log").textContent = data.log.join("\n");
     document.getElementById("run-log").scrollTop = document.getElementById("run-log").scrollHeight;
+    renderLiveMonitor(data.resource_samples || []);
 
     const banner = document.getElementById("confirm-banner");
     if (data.status === "waiting_confirm") {
@@ -520,6 +675,78 @@ function pollRun() {
 document.getElementById("confirm-continue").addEventListener("click", async () => {
   await api(`/api/run/${state.activeRunId}/continue`, { method: "POST" });
 });
+
+// ---------- Live Hardware Monitor ----------
+const LIVE_METRICS = [
+  { key: "cpu_percent", label: "CPU", unit: "%", fixedMax: 100 },
+  { key: "ram_used_gb", label: "RAM", unit: "GB", totalKey: "ram_total_gb" },
+  { key: "gpu_util_percent", label: "GPU", unit: "%", fixedMax: 100 },
+  { key: "gpu_mem_used_gb", label: "GPU Memory", unit: "GB" },
+  { key: "disk_read_mb_s", label: "Disk Read", unit: "MB/s" },
+  { key: "disk_write_mb_s", label: "Disk Write", unit: "MB/s" },
+];
+
+function buildSparklinePath(values, width, height, yMax) {
+  if (values.length < 2) return "";
+  const stepX = width / (values.length - 1);
+  return values
+    .map((v, i) => {
+      const x = i * stepX;
+      const y = height - (Math.min(v, yMax) / yMax) * height;
+      return `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(" ");
+}
+
+function renderLiveMonitor(samples) {
+  const grid = document.getElementById("live-monitor-grid");
+  if (!grid) return;
+  if (samples.length === 0) {
+    grid.innerHTML = '<p class="muted">Waiting for first sample...</p>';
+    return;
+  }
+
+  const width = 220;
+  const height = 46;
+  grid.innerHTML = "";
+
+  LIVE_METRICS.forEach((metric) => {
+    const values = samples.map((s) => s[metric.key]).filter((v) => v != null);
+    if (values.length === 0) return;
+    const current = values[values.length - 1];
+    const yMax = metric.fixedMax ?? Math.max(...values, 0.001) * 1.15;
+
+    const tile = document.createElement("div");
+    tile.className = "live-monitor-tile";
+
+    const header = document.createElement("div");
+    header.className = "live-monitor-header";
+    const labelEl = document.createElement("span");
+    labelEl.className = "live-monitor-label";
+    labelEl.textContent = metric.label;
+    header.appendChild(labelEl);
+    const valueEl = document.createElement("span");
+    valueEl.className = "live-monitor-value";
+    const total = metric.totalKey ? samples[samples.length - 1][metric.totalKey] : null;
+    valueEl.textContent = total != null
+      ? `${fmtNum(current, 1)}/${fmtNum(total, 1)} ${metric.unit}`
+      : `${fmtNum(current, metric.unit === "%" ? 0 : 2)} ${metric.unit}`;
+    header.appendChild(valueEl);
+    tile.appendChild(header);
+
+    const svgNs = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(svgNs, "svg");
+    svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+    svg.setAttribute("class", "live-monitor-svg");
+    const path = document.createElementNS(svgNs, "path");
+    path.setAttribute("d", buildSparklinePath(values, width, height, total ?? yMax));
+    path.setAttribute("class", "live-monitor-line");
+    svg.appendChild(path);
+    tile.appendChild(svg);
+
+    grid.appendChild(tile);
+  });
+}
 
 // ---------- History ----------
 // Illustrative only -- NOT a live price lookup, and not tied to any specific
@@ -696,12 +923,16 @@ function renderRunDetail(data, suiteFilterVal, modelFilterVal) {
       const vram = resource.vram_delta_mb;
       const pillClass = suite.pass_rate >= 0.7 ? "pass" : "fail";
       const icon = suite.pass_rate >= 0.7 ? "✓" : "✗";
+      const truncatedCount = (suite.problems || []).filter((p) => p.truncated).length;
+      const truncatedBadge = truncatedCount > 0
+        ? `<span class="truncated-badge" title="${truncatedCount} of ${suite.total} failure(s) hit the max_tokens limit before finishing -- counted as failures, but may reflect too small a token budget rather than incorrect reasoning. Click the pill to inspect.">&#9888; ${truncatedCount} truncated</span>`
+        : "";
       html += `<tr>
         <td>${escapeHtml(modelName)}</td>
         <td>
           <span class="pill ${pillClass} clickable" data-run-id="${escapeHtml(data.run_id)}" data-model-name="${escapeHtml(modelName)}" data-suite-name="${escapeHtml(suiteName)}" title="Click to view detailed prompt/response/failure breakdown">
             <span class="icon">${icon}</span>${fmtPct(suite.pass_rate)} (${suite.pass_count}/${suite.total})
-          </span>
+          </span>${truncatedBadge}
         </td>
         <td>${fmtNum(suite.avg_latency_seconds)}s</td>
         <td>${fmtNum(suite.avg_ttft_seconds)}s</td>
@@ -798,6 +1029,28 @@ function showInspectorModal(runData, modelName, suiteName, filterState = "all") 
     `;
     card.appendChild(meta);
 
+    if (p.score != null) {
+      const scoreLabel = document.createElement("div");
+      scoreLabel.className = "problem-section-title";
+      scoreLabel.textContent = "Judge Score";
+      card.appendChild(scoreLabel);
+      const scoreBox = document.createElement("div");
+      scoreBox.className = "problem-box";
+      scoreBox.textContent = `${p.score}/10`;
+      card.appendChild(scoreBox);
+    }
+
+    if (p.rationale) {
+      const ratLabel = document.createElement("div");
+      ratLabel.className = "problem-section-title";
+      ratLabel.textContent = "Judge Rationale (what it said about this response)";
+      card.appendChild(ratLabel);
+      const ratBox = document.createElement("div");
+      ratBox.className = "problem-box";
+      ratBox.textContent = p.rationale;
+      card.appendChild(ratBox);
+    }
+
     if (p.prompt) {
       const pLabel = document.createElement("div");
       pLabel.className = "problem-section-title";
@@ -809,14 +1062,15 @@ function showInspectorModal(runData, modelName, suiteName, filterState = "all") 
       card.appendChild(pBox);
     }
 
-    if (p.error || p.failure_reason || p.error_message) {
+    const errorText = p.error || p.failure_reason || p.error_message;
+    if (errorText && errorText !== p.rationale) {
       const errLabel = document.createElement("div");
       errLabel.className = "problem-section-title";
       errLabel.textContent = "Error / Evaluation Failure";
       card.appendChild(errLabel);
       const errBox = document.createElement("div");
       errBox.className = "problem-box error";
-      errBox.textContent = p.error || p.failure_reason || p.error_message;
+      errBox.textContent = errorText;
       card.appendChild(errBox);
     }
 
@@ -1418,6 +1672,14 @@ function buildFullComparisonTable(series, categories, getSuite, runs) {
     pill.appendChild(icon);
     pill.appendChild(document.createTextNode(`${fmtPct(r.passRate)} (${r.passCount}/${r.total})`));
     tdPass.appendChild(pill);
+    const truncatedCount = (r.suiteData.problems || []).filter((p) => p.truncated).length;
+    if (truncatedCount > 0) {
+      const truncBadge = document.createElement("span");
+      truncBadge.className = "truncated-badge";
+      truncBadge.title = `${truncatedCount} of ${r.total} failure(s) hit the max_tokens limit before finishing -- counted as failures, but may reflect too small a token budget rather than incorrect reasoning. Click the pill to inspect.`;
+      truncBadge.textContent = `⚠ ${truncatedCount} truncated`;
+      tdPass.appendChild(truncBadge);
+    }
     row.appendChild(tdPass);
 
     const tdLatency = document.createElement("td");
@@ -1808,6 +2070,83 @@ async function renderCompare() {
 
   output.appendChild(buildTTFTChart(series, categories, getSuite));
   output.appendChild(buildFullComparisonTable(series, categories, getSuite, runs));
+
+  const frontierSection = buildFrontierJudgeSection(series, runs, getSuite);
+  if (frontierSection) output.appendChild(frontierSection);
+}
+
+function buildFrontierJudgeSection(series, runs, getSuite) {
+  const rows = series
+    .map((s) => ({ s, suite: getSuite(s, "frontier_graded") }))
+    .filter((r) => r.suite);
+  if (rows.length === 0) return null;
+
+  const wrap = document.createElement("div");
+  wrap.className = "card";
+
+  const heading = document.createElement("h2");
+  heading.textContent = "Frontier Judge (paid, non-deterministic)";
+  wrap.appendChild(heading);
+
+  const note = document.createElement("p");
+  note.className = "muted";
+  note.textContent =
+    "Each model answered its own freshly judge-generated tasks (different literal questions per model, " +
+    "not identical fixtures like the suites above) across 6 qualitative categories, graded by the same " +
+    "frontier model/rubric per run (see TASK_SPEC.md). The score is a qualitative judge signal, not an " +
+    "exact-match result -- kept separate from the deterministic pass rates.";
+  wrap.appendChild(note);
+
+  const table = document.createElement("table");
+  const headRow = document.createElement("tr");
+  ["Model", "Run", "Judged By", "Avg Score (/10)", "Pass Rate", ""].forEach((h) => {
+    const th = document.createElement("th");
+    th.textContent = h;
+    headRow.appendChild(th);
+  });
+  table.appendChild(headRow);
+
+  rows.forEach(({ s, suite }) => {
+    const run = runs.find((r) => r.run_id === s.runId);
+    const judgeInfo = run?.config_summary?.frontier_judge;
+    const judgedBy = judgeInfo ? `${judgeInfo.provider}/${judgeInfo.model}` : "unknown";
+
+    const row = document.createElement("tr");
+
+    const tdModel = document.createElement("td");
+    tdModel.textContent = s.modelName;
+    row.appendChild(tdModel);
+
+    const tdRun = document.createElement("td");
+    tdRun.textContent = s.runId;
+    row.appendChild(tdRun);
+
+    const tdJudge = document.createElement("td");
+    tdJudge.textContent = judgedBy;
+    row.appendChild(tdJudge);
+
+    const tdScore = document.createElement("td");
+    tdScore.textContent = suite.avg_score != null ? fmtNum(suite.avg_score, 1) : "n/a";
+    row.appendChild(tdScore);
+
+    const tdPass = document.createElement("td");
+    tdPass.textContent = `${fmtPct(suite.pass_rate)} (${suite.pass_count}/${suite.total})`;
+    row.appendChild(tdPass);
+
+    const tdExpand = document.createElement("td");
+    const expandBtn = document.createElement("button");
+    expandBtn.className = "secondary small";
+    expandBtn.textContent = "View rationale";
+    expandBtn.title = "See what the frontier judge said about each response";
+    expandBtn.addEventListener("click", () => openInspectorModalByData(s.runId, s.modelName, "frontier_graded"));
+    tdExpand.appendChild(expandBtn);
+    row.appendChild(tdExpand);
+
+    table.appendChild(row);
+  });
+
+  wrap.appendChild(table);
+  return wrap;
 }
 
 // ---------- settings ----------
@@ -1835,13 +2174,23 @@ async function loadSettings() {
   document.getElementById("settings-unload-cmd").value = data.runtime.unload_all_cmd || "";
 
   document.getElementById("settings-judge-enabled").checked = !!data.judge.enabled;
-  document.getElementById("settings-judge-provider").value = data.judge.provider || "anthropic";
+  const judgeProvider = data.judge.provider || "anthropic";
+  document.getElementById("settings-judge-provider").value = judgeProvider;
   document.getElementById("settings-judge-model").value = data.judge.model || "";
   document.getElementById("settings-judge-num-tasks").value = data.judge.num_tasks ?? "";
   document.getElementById("settings-judge-pass-threshold").value = data.judge.pass_threshold ?? "";
+  state.settingsJudgeSaved = { provider: judgeProvider, model: data.judge.model || "" };
+  await loadJudgeModelOptions(judgeProvider, "settings-judge-model-options", "settings-judge-model-status");
 
   renderKeysList(data.keys);
 }
+
+document.getElementById("settings-judge-provider")?.addEventListener("change", async (e) => {
+  const provider = e.target.value;
+  const modelInput = document.getElementById("settings-judge-model");
+  modelInput.value = state.settingsJudgeSaved?.provider === provider ? (state.settingsJudgeSaved.model || "") : "";
+  await loadJudgeModelOptions(provider, "settings-judge-model-options", "settings-judge-model-status");
+});
 
 function renderKeysList(keys) {
   const container = document.getElementById("settings-keys-list");

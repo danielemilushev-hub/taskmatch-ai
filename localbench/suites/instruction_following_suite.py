@@ -7,6 +7,7 @@ not whether the content is good.
 from __future__ import annotations
 
 import re
+from typing import Callable
 
 from ..data.instruction_following_problems import generate_problems
 from ..engine import RunContext
@@ -87,6 +88,57 @@ _CHECKERS = {
 }
 
 
+def _run_one(problem: dict, ctx: RunContext, call_kwargs: dict) -> ProblemResult:
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": problem["prompt"]},
+    ]
+
+    chat = ctx.call(messages, **call_kwargs)
+    prompt_val = problem["prompt"]
+
+    if not chat.success:
+        return ProblemResult(
+            problem_id=problem["id"],
+            passed=False,
+            error=f"call failed: {chat.error}",
+            latency_seconds=chat.latency_seconds,
+            ttft_seconds=chat.ttft_seconds,
+            prompt=prompt_val,
+        )
+
+    if chat.truncated:
+        return ProblemResult(
+            problem_id=problem["id"],
+            passed=False,
+            error="response truncated at max_tokens before completion (finish_reason=length)",
+            latency_seconds=chat.latency_seconds,
+            ttft_seconds=chat.ttft_seconds,
+            prompt_tokens=chat.prompt_tokens,
+            completion_tokens=chat.completion_tokens,
+            prompt=prompt_val,
+            response_content=chat.content,
+            reasoning_content=chat.reasoning_content,
+            truncated=True,
+        )
+
+    checker = _CHECKERS[problem["constraint_type"]]
+    passed, error = checker(chat.content or "", problem["params"])
+
+    return ProblemResult(
+        problem_id=problem["id"],
+        passed=passed,
+        error=error,
+        latency_seconds=chat.latency_seconds,
+        ttft_seconds=chat.ttft_seconds,
+        prompt_tokens=chat.prompt_tokens,
+        completion_tokens=chat.completion_tokens,
+        prompt=prompt_val,
+        response_content=chat.content,
+        reasoning_content=chat.reasoning_content,
+    )
+
+
 def run(
     ctx: RunContext,
     num_problems: int = 16,
@@ -94,6 +146,7 @@ def run(
     problems: list[dict] | None = None,
     max_tokens: int | None = None,
     call_timeout_seconds: float | None = None,
+    on_progress: Callable[[int, int, str, bool], None] | None = None,
 ) -> list[ProblemResult]:
     problems = problems if problems is not None else generate_problems(num_problems, seed)
     results: list[ProblemResult] = []
@@ -103,62 +156,10 @@ def run(
     if call_timeout_seconds is not None:
         call_kwargs["timeout_seconds"] = call_timeout_seconds
 
-    for problem in problems:
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": problem["prompt"]},
-        ]
-
-        chat = ctx.call(messages, **call_kwargs)
-
-        prompt_val = problem["prompt"]
-        if not chat.success:
-            results.append(
-                ProblemResult(
-                    problem_id=problem["id"],
-                    passed=False,
-                    error=f"call failed: {chat.error}",
-                    latency_seconds=chat.latency_seconds,
-                    ttft_seconds=chat.ttft_seconds,
-                    prompt=prompt_val,
-                )
-            )
-            continue
-
-        if chat.truncated:
-            results.append(
-                ProblemResult(
-                    problem_id=problem["id"],
-                    passed=False,
-                    error="response truncated at max_tokens before completion (finish_reason=length)",
-                    latency_seconds=chat.latency_seconds,
-                    ttft_seconds=chat.ttft_seconds,
-                    prompt_tokens=chat.prompt_tokens,
-                    completion_tokens=chat.completion_tokens,
-                    prompt=prompt_val,
-                    response_content=chat.content,
-                    reasoning_content=chat.reasoning_content,
-                    truncated=True,
-                )
-            )
-            continue
-
-        checker = _CHECKERS[problem["constraint_type"]]
-        passed, error = checker(chat.content or "", problem["params"])
-
-        results.append(
-            ProblemResult(
-                problem_id=problem["id"],
-                passed=passed,
-                error=error,
-                latency_seconds=chat.latency_seconds,
-                ttft_seconds=chat.ttft_seconds,
-                prompt_tokens=chat.prompt_tokens,
-                completion_tokens=chat.completion_tokens,
-                prompt=prompt_val,
-                response_content=chat.content,
-                reasoning_content=chat.reasoning_content,
-            )
-        )
+    for idx, problem in enumerate(problems):
+        result = _run_one(problem, ctx, call_kwargs)
+        results.append(result)
+        if on_progress:
+            on_progress(idx + 1, len(problems), result.problem_id, result.passed)
 
     return results

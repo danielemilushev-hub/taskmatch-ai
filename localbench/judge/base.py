@@ -5,8 +5,21 @@ task generation and grading prompt/parsing logic lives here once.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 
 from ..json_extract import extract_json
+
+
+@dataclass
+class JudgeChatResult:
+    text: str
+    # Real token usage from the provider's own API response -- needed to
+    # honestly estimate the judge's own cost (separate from the local
+    # model's tokens, which are free and tracked elsewhere). None if a
+    # provider's SDK response doesn't expose it for some reason.
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+
 
 _GENERATE_TASK_PROMPT = """\
 {task_spec}
@@ -60,20 +73,21 @@ class JudgeClient(ABC):
         self.model = model
 
     @abstractmethod
-    def chat(self, messages: list[dict[str, str]], max_tokens: int = 1024) -> str:
-        """Send messages to the provider, return the text response. Each
-        provider subclass implements this against its own SDK/API."""
+    def chat(self, messages: list[dict[str, str]], max_tokens: int = 1024) -> JudgeChatResult:
+        """Send messages to the provider, return the text response plus real
+        token usage from that API response. Each provider subclass
+        implements this against its own SDK/API."""
         raise NotImplementedError
 
-    def generate_task(self, category: str, task_spec: str) -> dict:
+    def generate_task(self, category: str, task_spec: str) -> tuple[dict, JudgeChatResult]:
         prompt = _GENERATE_TASK_PROMPT.format(task_spec=task_spec, category=category)
-        raw = self.chat([{"role": "user", "content": prompt}], max_tokens=1024)
-        value, error = extract_json(raw)
+        result = self.chat([{"role": "user", "content": prompt}], max_tokens=1024)
+        value, error = extract_json(result.text)
         if error or not isinstance(value, dict):
-            raise ValueError(f"judge did not return a valid task JSON object: {error or raw!r}")
-        return value
+            raise ValueError(f"judge did not return a valid task JSON object: {error or result.text!r}")
+        return value, result
 
-    def grade(self, task: dict, response: str, task_spec: str) -> dict:
+    def grade(self, task: dict, response: str, task_spec: str) -> tuple[dict, JudgeChatResult]:
         prompt = _GRADE_PROMPT.format(
             task_spec=task_spec,
             category=task.get("category", "unknown"),
@@ -81,8 +95,8 @@ class JudgeClient(ABC):
             rubric="\n".join(f"- {c}" for c in task.get("rubric", [])),
             response=response or "(empty response)",
         )
-        raw = self.chat([{"role": "user", "content": prompt}], max_tokens=1024)
-        value, error = extract_json(raw)
+        result = self.chat([{"role": "user", "content": prompt}], max_tokens=1024)
+        value, error = extract_json(result.text)
         if error or not isinstance(value, dict):
-            raise ValueError(f"judge did not return a valid grade JSON object: {error or raw!r}")
-        return value
+            raise ValueError(f"judge did not return a valid grade JSON object: {error or result.text!r}")
+        return value, result

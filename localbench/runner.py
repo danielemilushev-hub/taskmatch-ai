@@ -40,6 +40,14 @@ def _default_confirm(message: str) -> None:
     input(message)
 
 
+def _make_progress_logger(log, model_name: str, suite_name: str):
+    def on_progress(idx: int, total: int, problem_id: str, passed: bool) -> None:
+        status = "PASS" if passed else "FAIL"
+        log(f"    [{model_name}] {suite_name} [{idx}/{total}] {problem_id}: {status}")
+
+    return on_progress
+
+
 def _switch_to_model(model_cfg: dict, base_url: str, unload_all_cmd: str | None, log, confirm) -> None:
     switch = model_cfg.get("switch") or {}
     load_cmd = switch.get("load_cmd")
@@ -148,6 +156,11 @@ def run_benchmark(
                 "run_frontier_graded=True but judge.enabled is false in config -- "
                 "set judge.enabled: true and configure a provider/model first"
             )
+        run.config_summary["frontier_judge"] = {
+            "provider": judge_cfg.get("provider"),
+            "model": judge_cfg.get("model"),
+            "pass_threshold": judge_cfg.get("pass_threshold", 7),
+        }
         from .judge.factory import get_judge_client
 
         log(f"initializing frontier judge: {judge_cfg['provider']}/{judge_cfg['model']}")
@@ -180,6 +193,7 @@ def run_benchmark(
                     ctx,
                     max_tokens=json_schema_cfg.get("max_tokens"),
                     call_timeout_seconds=json_schema_cfg.get("call_timeout_seconds"),
+                    on_progress=_make_progress_logger(log, model_name, "json_schema"),
                 )
             model_result.suites["json_schema"] = SuiteRunResult(
                 suite="json_schema", problems=problems, resource_usage=mon.summary()
@@ -194,6 +208,7 @@ def run_benchmark(
                     timeout_seconds=coding_cfg.get("timeout_seconds", 10),
                     max_tokens=coding_cfg.get("max_tokens"),
                     call_timeout_seconds=coding_cfg.get("call_timeout_seconds"),
+                    on_progress=_make_progress_logger(log, model_name, "coding"),
                 )
             model_result.suites["coding"] = SuiteRunResult(
                 suite="coding", problems=problems, resource_usage=mon.summary()
@@ -209,6 +224,7 @@ def run_benchmark(
                     seed=logic_math_cfg.get("seed", 42),
                     max_tokens=logic_math_cfg.get("max_tokens"),
                     call_timeout_seconds=logic_math_cfg.get("call_timeout_seconds"),
+                    on_progress=_make_progress_logger(log, model_name, "logic_math"),
                 )
             model_result.suites["logic_math"] = SuiteRunResult(
                 suite="logic_math", problems=problems, resource_usage=mon.summary()
@@ -224,6 +240,7 @@ def run_benchmark(
                     seed=instruction_following_cfg.get("seed", 42),
                     max_tokens=instruction_following_cfg.get("max_tokens"),
                     call_timeout_seconds=instruction_following_cfg.get("call_timeout_seconds"),
+                    on_progress=_make_progress_logger(log, model_name, "instruction_following"),
                 )
             model_result.suites["instruction_following"] = SuiteRunResult(
                 suite="instruction_following", problems=problems, resource_usage=mon.summary()
@@ -239,6 +256,7 @@ def run_benchmark(
                     seed=pattern_reasoning_cfg.get("seed", 42),
                     max_tokens=pattern_reasoning_cfg.get("max_tokens"),
                     call_timeout_seconds=pattern_reasoning_cfg.get("call_timeout_seconds"),
+                    on_progress=_make_progress_logger(log, model_name, "pattern_reasoning"),
                 )
             model_result.suites["pattern_reasoning"] = SuiteRunResult(
                 suite="pattern_reasoning", problems=problems, resource_usage=mon.summary()
@@ -256,6 +274,7 @@ def run_benchmark(
                     window_lines=long_context_cfg.get("window_lines", 1000),
                     timeout_seconds=long_context_cfg.get("timeout_seconds", 180),
                     max_tokens=long_context_cfg.get("max_tokens"),
+                    on_progress=_make_progress_logger(log, model_name, "long_context"),
                 )
             model_result.suites["long_context"] = SuiteRunResult(
                 suite="long_context", problems=problems, resource_usage=mon.summary()

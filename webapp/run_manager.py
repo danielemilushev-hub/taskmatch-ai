@@ -25,6 +25,7 @@ import time
 import uuid
 from pathlib import Path
 
+from localbench.live_monitor import LiveHardwareMonitor
 from localbench.runner import run_benchmark
 
 _ORPHANED_MESSAGE = (
@@ -34,9 +35,10 @@ _ORPHANED_MESSAGE = (
 
 
 class ActiveRun:
-    def __init__(self, run_id: str, config: dict, active_dir: Path):
+    def __init__(self, run_id: str, config: dict, active_dir: Path, run_frontier_graded: bool = False):
         self.run_id = run_id
         self.config = config
+        self.run_frontier_graded = run_frontier_graded
         self.log_lines: list[str] = []
         self.status = "running"  # running | waiting_confirm | done | error
         self.pending_message: str | None = None
@@ -46,6 +48,7 @@ class ActiveRun:
         self.thread: threading.Thread | None = None
         self.created_at = time.time()
         self.state_file = active_dir / f"{self.run_id}.json"
+        self.live_monitor = LiveHardwareMonitor()
 
     def _persist(self) -> None:
         try:
@@ -69,9 +72,15 @@ class ActiveRun:
 
     def start(self) -> None:
         def target() -> None:
+            self.live_monitor.start()
             try:
                 self._persist()
-                record = run_benchmark(self.config, progress_cb=self.log, confirm_cb=self.confirm)
+                record = run_benchmark(
+                    self.config,
+                    progress_cb=self.log,
+                    confirm_cb=self.confirm,
+                    run_frontier_graded=self.run_frontier_graded,
+                )
                 self.result_run_id = record.run_id
                 self.status = "done"
                 self._persist()
@@ -79,6 +88,8 @@ class ActiveRun:
                 self.error = str(e)
                 self.status = "error"
                 self._persist()
+            finally:
+                self.live_monitor.stop()
 
         self.thread = threading.Thread(target=target, daemon=True)
         self.thread.start()
@@ -91,6 +102,7 @@ class ActiveRun:
             "pending_message": self.pending_message,
             "error": self.error,
             "result_run_id": self.result_run_id,
+            "resource_samples": self.live_monitor.latest_samples(),
             "done": self.status in ("done", "error"),
         }
 
@@ -122,9 +134,9 @@ class RunManager:
                 except OSError:
                     pass
 
-    def start_run(self, config: dict) -> str:
+    def start_run(self, config: dict, run_frontier_graded: bool = False) -> str:
         run_id = uuid.uuid4().hex[:8]
-        active = ActiveRun(run_id, config, self.active_dir)
+        active = ActiveRun(run_id, config, self.active_dir, run_frontier_graded=run_frontier_graded)
         with self._lock:
             self._runs[run_id] = active
         active.start()

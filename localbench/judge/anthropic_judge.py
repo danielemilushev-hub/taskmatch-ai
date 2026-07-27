@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import os
 
-from .base import JudgeClient
+from .base import JudgeChatResult, JudgeClient
 
 
 class AnthropicJudge(JudgeClient):
@@ -21,10 +21,15 @@ class AnthropicJudge(JudgeClient):
 
         self._client = anthropic.Anthropic(api_key=api_key)
 
-    def chat(self, messages: list[dict[str, str]], max_tokens: int = 1024) -> str:
+    def chat(self, messages: list[dict[str, str]], max_tokens: int = 1024) -> JudgeChatResult:
         resp = self._client.messages.create(
             model=self.model,
             max_tokens=max_tokens,
             messages=messages,
         )
-        return "".join(block.text for block in resp.content if block.type == "text")
+        text = "".join(block.text for block in resp.content if block.type == "text")
+        return JudgeChatResult(
+            text=text,
+            prompt_tokens=resp.usage.input_tokens,
+            completion_tokens=resp.usage.output_tokens,
+        )

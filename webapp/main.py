@@ -172,6 +172,92 @@ def update_settings_judge(payload: dict) -> dict:
         raise HTTPException(400, str(e))
 
 
+@app.get("/api/settings/judge/models")
+def judge_models(provider: str) -> dict:
+    if provider not in settings_store.PROVIDER_ENV_VARS:
+        raise HTTPException(400, f"unknown provider '{provider}'")
+    return {"models": settings_store.list_judge_models(provider)}
+
+
+@app.get("/api/settings/judge/history")
+def judge_history(provider: str, model: str) -> dict:
+    """Best-effort: the most recent past run's measured frontier-graded
+    stats for this exact provider/model combo, so the New Run screen can
+    show a real, previously-observed time estimate instead of guessing
+    before this judge has ever actually been run. Returns found=False (not
+    an error) if no matching history exists yet -- that's the normal state
+    for a judge that's never been used."""
+    config = load_config()
+    results_dir = Path(config.get("output", {}).get("results_dir", "results"))
+    runs_dir = results_dir / "runs"
+    if not runs_dir.exists():
+        return {"found": False}
+
+    for path in sorted(runs_dir.glob("*.json"), reverse=True):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        judge_info = data.get("config_summary", {}).get("frontier_judge") or {}
+        if judge_info.get("provider") != provider or judge_info.get("model") != model:
+            continue
+        for model_result in data.get("models", {}).values():
+            suite = model_result.get("suites", {}).get("frontier_graded")
+            if suite and suite.get("total") and suite.get("avg_seconds_per_task") is not None:
+                return {
+                    "found": True,
+                    "run_id": data.get("run_id"),
+                    "avg_seconds_per_task": suite["avg_seconds_per_task"],
+                    "total_tasks": suite["total"],
+                    "avg_judge_prompt_tokens": suite.get("avg_judge_prompt_tokens"),
+                    "avg_judge_completion_tokens": suite.get("avg_judge_completion_tokens"),
+                }
+    return {"found": False}
+
+
+@app.get("/api/settings/judge/cost-estimate")
+def judge_cost_estimate(provider: str, model: str, num_tasks: int) -> dict:
+    """Real dollar estimate using OpenRouter's own public, live per-token
+    pricing plus real token usage observed in a previous run with this
+    judge. Only available for OpenRouter -- Anthropic/OpenAI/Gemini don't
+    expose pricing via a stable public API, and hardcoding their rates here
+    would just go stale and mislead, so we deliberately don't guess for
+    them."""
+    if provider != "openrouter":
+        return {
+            "available": False,
+            "reason": "Live pricing is only available for OpenRouter (a public marketplace API). "
+            "Check your provider's own pricing page for a per-token rate.",
+        }
+
+    history = judge_history(provider, model)
+    if not history["found"] or history.get("avg_judge_prompt_tokens") is None:
+        return {
+            "available": False,
+            "reason": "No previous run with this exact model yet -- token usage can't be estimated until after a first run.",
+        }
+
+    pricing = settings_store.get_openrouter_pricing(model)
+    if pricing is None:
+        return {
+            "available": False,
+            "reason": f"Could not find live pricing for '{model}' in OpenRouter's catalog -- check the model id.",
+        }
+
+    cost_per_task = (
+        history["avg_judge_prompt_tokens"] * pricing["prompt"]
+        + history["avg_judge_completion_tokens"] * pricing["completion"]
+    )
+    return {
+        "available": True,
+        "total_cost_usd": round(cost_per_task * num_tasks, 4),
+        "cost_per_task_usd": round(cost_per_task, 6),
+        "prompt_rate_per_1m": round(pricing["prompt"] * 1_000_000, 4),
+        "completion_rate_per_1m": round(pricing["completion"] * 1_000_000, 4),
+        "based_on_run": history["run_id"],
+    }
+
+
 @app.post("/api/settings/keys")
 def set_settings_key(payload: dict) -> dict:
     provider = payload.get("provider")
@@ -210,7 +296,33 @@ def start_run(payload: dict) -> dict:
         for suite_name in ALL_SUITES:
             suites_cfg.setdefault(suite_name, {})["enabled"] = suite_name in suites_filter
 
-    run_id = run_manager.start_run(config)
+    run_frontier_graded = bool(payload.get("run_frontier_graded"))
+    if run_frontier_graded:
+        judge_cfg = config.setdefault("judge", {})
+        if not judge_cfg.get("enabled"):
+            raise HTTPException(400, "frontier judge requested but judge.enabled is false -- enable it in Settings first")
+
+        # Per-run override: let the New Run screen pick a different judge
+        # provider/model than the one saved in Settings, without persisting
+        # that choice to config.yaml.
+        judge_override = payload.get("judge_override") or {}
+        override_provider = judge_override.get("provider")
+        if override_provider:
+            if override_provider not in settings_store.PROVIDER_ENV_VARS:
+                raise HTTPException(400, f"unknown judge provider '{override_provider}'")
+            judge_cfg["provider"] = override_provider
+        override_model = judge_override.get("model")
+        if override_model:
+            judge_cfg["model"] = override_model
+
+        provider = judge_cfg.get("provider")
+        if not settings_store.key_status().get(provider):
+            raise HTTPException(
+                400,
+                f"frontier judge requested but no API key is set for provider '{provider}' -- add one in Settings first",
+            )
+
+    run_id = run_manager.start_run(config, run_frontier_graded=run_frontier_graded)
     return {"run_id": run_id}
 
 

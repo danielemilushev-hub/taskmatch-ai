@@ -167,3 +167,99 @@ def clear_api_key(provider: str) -> None:
     if not ENV_PATH.exists():
         return
     unset_key(str(ENV_PATH), PROVIDER_ENV_VARS[provider])
+
+
+def _get_key(provider: str) -> str | None:
+    from dotenv import dotenv_values
+
+    env_values = dotenv_values(ENV_PATH) if ENV_PATH.exists() else {}
+    return env_values.get(PROVIDER_ENV_VARS.get(provider, ""))
+
+
+def list_judge_models(provider: str) -> list[str]:
+    """Best-effort live model list for the given judge provider -- lets the
+    Settings/New Run UI suggest real model ids instead of relying purely on
+    hand-typed strings. Returns [] on any failure (no key, network error,
+    unexpected response shape) rather than raising -- this is a UX
+    convenience, never required to actually run the judge."""
+    import requests
+
+    if provider == "openrouter":
+        # Public catalog, no key required -- OpenRouter is a marketplace and
+        # lists every model + its live pricing this way.
+        try:
+            resp = requests.get("https://openrouter.ai/api/v1/models", timeout=10)
+            resp.raise_for_status()
+            return sorted(m["id"] for m in resp.json().get("data", []) if m.get("id"))
+        except (requests.exceptions.RequestException, ValueError, KeyError):
+            return []
+
+    key = _get_key(provider)
+    if not key:
+        return []
+
+    try:
+        if provider == "anthropic":
+            resp = requests.get(
+                "https://api.anthropic.com/v1/models",
+                headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            return sorted(m["id"] for m in resp.json().get("data", []) if m.get("id"))
+
+        if provider == "openai":
+            resp = requests.get(
+                "https://api.openai.com/v1/models",
+                headers={"Authorization": f"Bearer {key}"},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            excluded = ("embedding", "whisper", "tts", "dall-e", "moderation")
+            ids = [
+                m["id"]
+                for m in resp.json().get("data", [])
+                if m.get("id") and not any(x in m["id"] for x in excluded)
+            ]
+            return sorted(ids)
+
+        if provider == "gemini":
+            resp = requests.get(
+                "https://generativelanguage.googleapis.com/v1beta/models",
+                params={"key": key},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            ids = [
+                m["name"].removeprefix("models/")
+                for m in resp.json().get("models", [])
+                if "generateContent" in (m.get("supportedGenerationMethods") or [])
+            ]
+            return sorted(ids)
+    except (requests.exceptions.RequestException, ValueError, KeyError):
+        return []
+
+    return []
+
+
+def get_openrouter_pricing(model: str) -> dict | None:
+    """Real, live $/token pricing for a specific OpenRouter model id, from
+    their public catalog (no key needed -- it's a marketplace, so pricing is
+    part of the product listing, not account-specific). Returns None if the
+    model isn't found or the request fails -- never a guessed number."""
+    import requests
+
+    try:
+        resp = requests.get("https://openrouter.ai/api/v1/models", timeout=10)
+        resp.raise_for_status()
+        for entry in resp.json().get("data", []):
+            if entry.get("id") == model:
+                pricing = entry.get("pricing") or {}
+                prompt_rate = pricing.get("prompt")
+                completion_rate = pricing.get("completion")
+                if prompt_rate is None or completion_rate is None:
+                    return None
+                return {"prompt": float(prompt_rate), "completion": float(completion_rate)}
+        return None
+    except (requests.exceptions.RequestException, ValueError, KeyError, TypeError):
+        return None

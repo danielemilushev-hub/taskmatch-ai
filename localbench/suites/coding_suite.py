@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import Callable
 
 from ..data.coding_problems import PROBLEMS
 from ..engine import RunContext
@@ -74,12 +75,142 @@ def _build_test_error(problem: dict, test_results: list[dict]) -> str:
     return "; ".join(lines)
 
 
+def _run_one(problem: dict, ctx: RunContext, call_kwargs: dict, timeout_seconds: float) -> ProblemResult:
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": problem["prompt"]},
+    ]
+
+    chat = ctx.call(messages, **call_kwargs)
+    prompt_val = problem["prompt"]
+
+    if not chat.success:
+        return ProblemResult(
+            problem_id=problem["id"],
+            passed=False,
+            error=f"call failed: {chat.error}",
+            latency_seconds=chat.latency_seconds,
+            ttft_seconds=chat.ttft_seconds,
+            prompt=prompt_val,
+        )
+
+    if chat.truncated:
+        return ProblemResult(
+            problem_id=problem["id"],
+            passed=False,
+            error="response truncated at max_tokens before completion (finish_reason=length)",
+            latency_seconds=chat.latency_seconds,
+            ttft_seconds=chat.ttft_seconds,
+            prompt_tokens=chat.prompt_tokens,
+            completion_tokens=chat.completion_tokens,
+            prompt=prompt_val,
+            response_content=chat.content,
+            reasoning_content=chat.reasoning_content,
+            truncated=True,
+        )
+
+    code = extract_code(chat.content)
+    if code is None:
+        return ProblemResult(
+            problem_id=problem["id"],
+            passed=False,
+            error="no Python code found in model output",
+            latency_seconds=chat.latency_seconds,
+            ttft_seconds=chat.ttft_seconds,
+            prompt_tokens=chat.prompt_tokens,
+            completion_tokens=chat.completion_tokens,
+            prompt=prompt_val,
+            response_content=chat.content,
+            reasoning_content=chat.reasoning_content,
+        )
+
+    script = _RUNNER_TEMPLATE.format(
+        code=code,
+        tests_repr=repr(problem["tests"]),
+        entry_point=problem["entry_point"],
+        marker=_RESULT_MARKER,
+    )
+
+    with tempfile.TemporaryDirectory(prefix="localbench_") as tmpdir:
+        script_path = Path(tmpdir) / "candidate.py"
+        script_path.write_text(script, encoding="utf-8")
+
+        try:
+            proc = subprocess.run(
+                [sys.executable, str(script_path)],
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+                cwd=tmpdir,
+            )
+        except subprocess.TimeoutExpired:
+            return ProblemResult(
+                problem_id=problem["id"],
+                passed=False,
+                error=f"execution timed out after {timeout_seconds}s",
+                latency_seconds=chat.latency_seconds,
+                ttft_seconds=chat.ttft_seconds,
+                prompt_tokens=chat.prompt_tokens,
+                completion_tokens=chat.completion_tokens,
+                prompt=prompt_val,
+                response_content=chat.content,
+                reasoning_content=chat.reasoning_content,
+            )
+
+    if _RESULT_MARKER not in proc.stdout:
+        error = f"sandbox process crashed before producing results: {proc.stderr[-500:]}"
+        return ProblemResult(
+            problem_id=problem["id"],
+            passed=False,
+            error=error,
+            latency_seconds=chat.latency_seconds,
+            ttft_seconds=chat.ttft_seconds,
+            prompt_tokens=chat.prompt_tokens,
+            completion_tokens=chat.completion_tokens,
+            prompt=prompt_val,
+            response_content=chat.content,
+            reasoning_content=chat.reasoning_content,
+        )
+
+    results_json = proc.stdout.split(_RESULT_MARKER, 1)[1].strip()
+    try:
+        test_results = json.loads(results_json)
+    except json.JSONDecodeError:
+        return ProblemResult(
+            problem_id=problem["id"],
+            passed=False,
+            error=f"could not parse sandbox output: {results_json[:300]}",
+            latency_seconds=chat.latency_seconds,
+            ttft_seconds=chat.ttft_seconds,
+            prompt_tokens=chat.prompt_tokens,
+            completion_tokens=chat.completion_tokens,
+            prompt=prompt_val,
+            response_content=chat.content,
+            reasoning_content=chat.reasoning_content,
+        )
+
+    all_pass = all(r.get("ok") for r in test_results)
+    return ProblemResult(
+        problem_id=problem["id"],
+        passed=all_pass,
+        error=None if all_pass else _build_test_error(problem, test_results),
+        latency_seconds=chat.latency_seconds,
+        ttft_seconds=chat.ttft_seconds,
+        prompt_tokens=chat.prompt_tokens,
+        completion_tokens=chat.completion_tokens,
+        prompt=prompt_val,
+        response_content=chat.content,
+        reasoning_content=chat.reasoning_content,
+    )
+
+
 def run(
     ctx: RunContext,
     problems: list[dict] | None = None,
     timeout_seconds: float = 10,
     max_tokens: int | None = None,
     call_timeout_seconds: float | None = None,
+    on_progress: Callable[[int, int, str, bool], None] | None = None,
 ) -> list[ProblemResult]:
     problems = problems if problems is not None else PROBLEMS
     results: list[ProblemResult] = []
@@ -89,152 +220,10 @@ def run(
     if call_timeout_seconds is not None:
         call_kwargs["timeout_seconds"] = call_timeout_seconds
 
-    for problem in problems:
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": problem["prompt"]},
-        ]
-
-        chat = ctx.call(messages, **call_kwargs)
-
-        prompt_val = problem["prompt"]
-        if not chat.success:
-            results.append(
-                ProblemResult(
-                    problem_id=problem["id"],
-                    passed=False,
-                    error=f"call failed: {chat.error}",
-                    latency_seconds=chat.latency_seconds,
-                    ttft_seconds=chat.ttft_seconds,
-                    prompt=prompt_val,
-                )
-            )
-            continue
-
-        if chat.truncated:
-            results.append(
-                ProblemResult(
-                    problem_id=problem["id"],
-                    passed=False,
-                    error="response truncated at max_tokens before completion (finish_reason=length)",
-                    latency_seconds=chat.latency_seconds,
-                    ttft_seconds=chat.ttft_seconds,
-                    prompt_tokens=chat.prompt_tokens,
-                    completion_tokens=chat.completion_tokens,
-                    prompt=prompt_val,
-                    response_content=chat.content,
-                    reasoning_content=chat.reasoning_content,
-                    truncated=True,
-                )
-            )
-            continue
-
-        code = extract_code(chat.content)
-        if code is None:
-            results.append(
-                ProblemResult(
-                    problem_id=problem["id"],
-                    passed=False,
-                    error="no Python code found in model output",
-                    latency_seconds=chat.latency_seconds,
-                    ttft_seconds=chat.ttft_seconds,
-                    prompt_tokens=chat.prompt_tokens,
-                    completion_tokens=chat.completion_tokens,
-                    prompt=prompt_val,
-                    response_content=chat.content,
-                    reasoning_content=chat.reasoning_content,
-                )
-            )
-            continue
-
-        script = _RUNNER_TEMPLATE.format(
-            code=code,
-            tests_repr=repr(problem["tests"]),
-            entry_point=problem["entry_point"],
-            marker=_RESULT_MARKER,
-        )
-
-        with tempfile.TemporaryDirectory(prefix="localbench_") as tmpdir:
-            script_path = Path(tmpdir) / "candidate.py"
-            script_path.write_text(script, encoding="utf-8")
-
-            try:
-                proc = subprocess.run(
-                    [sys.executable, str(script_path)],
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout_seconds,
-                    cwd=tmpdir,
-                )
-            except subprocess.TimeoutExpired:
-                results.append(
-                    ProblemResult(
-                        problem_id=problem["id"],
-                        passed=False,
-                        error=f"execution timed out after {timeout_seconds}s",
-                        latency_seconds=chat.latency_seconds,
-                        ttft_seconds=chat.ttft_seconds,
-                        prompt_tokens=chat.prompt_tokens,
-                        completion_tokens=chat.completion_tokens,
-                        prompt=prompt_val,
-                        response_content=chat.content,
-                        reasoning_content=chat.reasoning_content,
-                    )
-                )
-                continue
-
-        if _RESULT_MARKER not in proc.stdout:
-            error = f"sandbox process crashed before producing results: {proc.stderr[-500:]}"
-            results.append(
-                ProblemResult(
-                    problem_id=problem["id"],
-                    passed=False,
-                    error=error,
-                    latency_seconds=chat.latency_seconds,
-                    ttft_seconds=chat.ttft_seconds,
-                    prompt_tokens=chat.prompt_tokens,
-                    completion_tokens=chat.completion_tokens,
-                    prompt=prompt_val,
-                    response_content=chat.content,
-                    reasoning_content=chat.reasoning_content,
-                )
-            )
-            continue
-
-        results_json = proc.stdout.split(_RESULT_MARKER, 1)[1].strip()
-        try:
-            test_results = json.loads(results_json)
-        except json.JSONDecodeError:
-            results.append(
-                ProblemResult(
-                    problem_id=problem["id"],
-                    passed=False,
-                    error=f"could not parse sandbox output: {results_json[:300]}",
-                    latency_seconds=chat.latency_seconds,
-                    ttft_seconds=chat.ttft_seconds,
-                    prompt_tokens=chat.prompt_tokens,
-                    completion_tokens=chat.completion_tokens,
-                    prompt=prompt_val,
-                    response_content=chat.content,
-                    reasoning_content=chat.reasoning_content,
-                )
-            )
-            continue
-
-        all_pass = all(r.get("ok") for r in test_results)
-        results.append(
-            ProblemResult(
-                problem_id=problem["id"],
-                passed=all_pass,
-                error=None if all_pass else _build_test_error(problem, test_results),
-                latency_seconds=chat.latency_seconds,
-                ttft_seconds=chat.ttft_seconds,
-                prompt_tokens=chat.prompt_tokens,
-                completion_tokens=chat.completion_tokens,
-                prompt=prompt_val,
-                response_content=chat.content,
-                reasoning_content=chat.reasoning_content,
-            )
-        )
+    for idx, problem in enumerate(problems):
+        result = _run_one(problem, ctx, call_kwargs, timeout_seconds)
+        results.append(result)
+        if on_progress:
+            on_progress(idx + 1, len(problems), result.problem_id, result.passed)
 
     return results

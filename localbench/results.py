@@ -25,6 +25,19 @@ class ProblemResult:
     # signal, not a deterministic exact-match result like the other suites.
     score: float | None = None
     rationale: str | None = None
+    # Wall-clock time of the two paid frontier-judge API calls (task
+    # generation, grading) -- separate from latency_seconds, which only
+    # times the local model's own call. Needed to honestly estimate how
+    # long/costly a future frontier-graded run will be, since local suites
+    # never make outbound paid calls and have no equivalent.
+    judge_generate_seconds: float | None = None
+    judge_grade_seconds: float | None = None
+    # Real token usage from the judge's own two API calls (generation +
+    # grading), summed -- separate from prompt_tokens/completion_tokens
+    # above, which are the LOCAL model's (free) tokens. This is what
+    # actually costs money and is needed for a real cost estimate.
+    judge_prompt_tokens: int | None = None
+    judge_completion_tokens: int | None = None
 
     @property
     def tokens_per_sec(self) -> float | None:
@@ -76,6 +89,35 @@ class SuiteRunResult:
         rates = [p.tokens_per_sec for p in self.problems if p.tokens_per_sec is not None]
         return sum(rates) / len(rates) if rates else None
 
+    @property
+    def avg_score(self) -> float | None:
+        # Only meaningful for the frontier-graded suite -- score is None on
+        # every other suite's ProblemResult, so this is naturally empty there.
+        scores = [p.score for p in self.problems if p.score is not None]
+        return sum(scores) / len(scores) if scores else None
+
+    @property
+    def avg_seconds_per_task(self) -> float | None:
+        # Only meaningful for the frontier-graded suite: local call latency
+        # plus both paid judge calls (generate + grade), so a future run's
+        # total wall-clock time can be estimated as num_tasks * this value.
+        totals = [
+            p.latency_seconds + (p.judge_generate_seconds or 0) + (p.judge_grade_seconds or 0)
+            for p in self.problems
+            if p.judge_generate_seconds is not None or p.judge_grade_seconds is not None
+        ]
+        return sum(totals) / len(totals) if totals else None
+
+    @property
+    def avg_judge_prompt_tokens(self) -> float | None:
+        values = [p.judge_prompt_tokens for p in self.problems if p.judge_prompt_tokens is not None]
+        return sum(values) / len(values) if values else None
+
+    @property
+    def avg_judge_completion_tokens(self) -> float | None:
+        values = [p.judge_completion_tokens for p in self.problems if p.judge_completion_tokens is not None]
+        return sum(values) / len(values) if values else None
+
     def to_dict(self) -> dict:
         return {
             "suite": self.suite,
@@ -86,6 +128,10 @@ class SuiteRunResult:
             "avg_latency_seconds": self.avg_latency_seconds,
             "avg_ttft_seconds": self.avg_ttft_seconds,
             "avg_tokens_per_sec": self.avg_tokens_per_sec,
+            "avg_score": self.avg_score,
+            "avg_seconds_per_task": self.avg_seconds_per_task,
+            "avg_judge_prompt_tokens": self.avg_judge_prompt_tokens,
+            "avg_judge_completion_tokens": self.avg_judge_completion_tokens,
             "resource_usage": self.resource_usage,
         }
 

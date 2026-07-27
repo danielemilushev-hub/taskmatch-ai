@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import os
 
-from .base import JudgeClient
+from .base import JudgeChatResult, JudgeClient
 
 
 class OpenAIJudge(JudgeClient):
@@ -20,10 +20,15 @@ class OpenAIJudge(JudgeClient):
 
         self._client = openai.OpenAI(api_key=api_key)
 
-    def chat(self, messages: list[dict[str, str]], max_tokens: int = 1024) -> str:
+    def chat(self, messages: list[dict[str, str]], max_tokens: int = 1024) -> JudgeChatResult:
         resp = self._client.chat.completions.create(
             model=self.model,
             max_completion_tokens=max_tokens,
             messages=messages,
         )
-        return resp.choices[0].message.content or ""
+        usage = resp.usage
+        return JudgeChatResult(
+            text=resp.choices[0].message.content or "",
+            prompt_tokens=usage.prompt_tokens if usage else None,
+            completion_tokens=usage.completion_tokens if usage else None,
+        )

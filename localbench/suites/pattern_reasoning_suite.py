@@ -6,6 +6,7 @@ match against the programmatically-computed expected grid.
 from __future__ import annotations
 
 import re
+from typing import Callable
 
 from ..data.pattern_reasoning_problems import generate_problems
 from ..engine import RunContext
@@ -59,6 +60,73 @@ def _parse_grid(
     return grid, None
 
 
+def _run_one(problem: dict, ctx: RunContext, call_kwargs: dict) -> ProblemResult:
+    prompt_val = _build_prompt(problem)
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": prompt_val},
+    ]
+
+    chat = ctx.call(messages, **call_kwargs)
+
+    if not chat.success:
+        return ProblemResult(
+            problem_id=problem["id"],
+            passed=False,
+            error=f"call failed: {chat.error}",
+            latency_seconds=chat.latency_seconds,
+            ttft_seconds=chat.ttft_seconds,
+            prompt=prompt_val,
+        )
+
+    if chat.truncated:
+        return ProblemResult(
+            problem_id=problem["id"],
+            passed=False,
+            error="response truncated at max_tokens before completion (finish_reason=length)",
+            latency_seconds=chat.latency_seconds,
+            ttft_seconds=chat.ttft_seconds,
+            prompt_tokens=chat.prompt_tokens,
+            completion_tokens=chat.completion_tokens,
+            prompt=prompt_val,
+            response_content=chat.content,
+            reasoning_content=chat.reasoning_content,
+            truncated=True,
+        )
+
+    expected = problem["expected_output"]
+    expected_rows, expected_cols = len(expected), len(expected[0])
+    grid, parse_error = _parse_grid(chat.content, expected_rows, expected_cols)
+
+    if grid is None:
+        return ProblemResult(
+            problem_id=problem["id"],
+            passed=False,
+            error=f"could not parse output grid: {parse_error}",
+            latency_seconds=chat.latency_seconds,
+            ttft_seconds=chat.ttft_seconds,
+            prompt_tokens=chat.prompt_tokens,
+            completion_tokens=chat.completion_tokens,
+            prompt=prompt_val,
+            response_content=chat.content,
+            reasoning_content=chat.reasoning_content,
+        )
+
+    passed = grid == expected
+    return ProblemResult(
+        problem_id=problem["id"],
+        passed=passed,
+        error=None if passed else f"expected grid {expected}, got {grid}",
+        latency_seconds=chat.latency_seconds,
+        ttft_seconds=chat.ttft_seconds,
+        prompt_tokens=chat.prompt_tokens,
+        completion_tokens=chat.completion_tokens,
+        prompt=prompt_val,
+        response_content=chat.content,
+        reasoning_content=chat.reasoning_content,
+    )
+
+
 def run(
     ctx: RunContext,
     num_problems: int = 10,
@@ -66,6 +134,7 @@ def run(
     problems: list[dict] | None = None,
     max_tokens: int | None = None,
     call_timeout_seconds: float | None = None,
+    on_progress: Callable[[int, int, str, bool], None] | None = None,
 ) -> list[ProblemResult]:
     problems = problems if problems is not None else generate_problems(num_problems, seed)
     results: list[ProblemResult] = []
@@ -75,81 +144,10 @@ def run(
     if call_timeout_seconds is not None:
         call_kwargs["timeout_seconds"] = call_timeout_seconds
 
-    for problem in problems:
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": _build_prompt(problem)},
-        ]
-
-        chat = ctx.call(messages, **call_kwargs)
-
-        prompt_val = _build_prompt(problem)
-        if not chat.success:
-            results.append(
-                ProblemResult(
-                    problem_id=problem["id"],
-                    passed=False,
-                    error=f"call failed: {chat.error}",
-                    latency_seconds=chat.latency_seconds,
-                    ttft_seconds=chat.ttft_seconds,
-                    prompt=prompt_val,
-                )
-            )
-            continue
-
-        if chat.truncated:
-            results.append(
-                ProblemResult(
-                    problem_id=problem["id"],
-                    passed=False,
-                    error="response truncated at max_tokens before completion (finish_reason=length)",
-                    latency_seconds=chat.latency_seconds,
-                    ttft_seconds=chat.ttft_seconds,
-                    prompt_tokens=chat.prompt_tokens,
-                    completion_tokens=chat.completion_tokens,
-                    prompt=prompt_val,
-                    response_content=chat.content,
-                    reasoning_content=chat.reasoning_content,
-                    truncated=True,
-                )
-            )
-            continue
-
-        expected = problem["expected_output"]
-        expected_rows, expected_cols = len(expected), len(expected[0])
-        grid, parse_error = _parse_grid(chat.content, expected_rows, expected_cols)
-
-        if grid is None:
-            results.append(
-                ProblemResult(
-                    problem_id=problem["id"],
-                    passed=False,
-                    error=f"could not parse output grid: {parse_error}",
-                    latency_seconds=chat.latency_seconds,
-                    ttft_seconds=chat.ttft_seconds,
-                    prompt_tokens=chat.prompt_tokens,
-                    completion_tokens=chat.completion_tokens,
-                    prompt=prompt_val,
-                    response_content=chat.content,
-                    reasoning_content=chat.reasoning_content,
-                )
-            )
-            continue
-
-        passed = grid == expected
-        results.append(
-            ProblemResult(
-                problem_id=problem["id"],
-                passed=passed,
-                error=None if passed else f"expected grid {expected}, got {grid}",
-                latency_seconds=chat.latency_seconds,
-                ttft_seconds=chat.ttft_seconds,
-                prompt_tokens=chat.prompt_tokens,
-                completion_tokens=chat.completion_tokens,
-                prompt=prompt_val,
-                response_content=chat.content,
-                reasoning_content=chat.reasoning_content,
-            )
-        )
+    for idx, problem in enumerate(problems):
+        result = _run_one(problem, ctx, call_kwargs)
+        results.append(result)
+        if on_progress:
+            on_progress(idx + 1, len(problems), result.problem_id, result.passed)
 
     return results

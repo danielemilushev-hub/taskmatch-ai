@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import os
 
-from .base import JudgeClient
+from .base import JudgeChatResult, JudgeClient
 
 
 class GeminiJudge(JudgeClient):
@@ -21,7 +21,7 @@ class GeminiJudge(JudgeClient):
 
         self._client = genai.Client(api_key=api_key)
 
-    def chat(self, messages: list[dict[str, str]], max_tokens: int = 1024) -> str:
+    def chat(self, messages: list[dict[str, str]], max_tokens: int = 1024) -> JudgeChatResult:
         # our usage is always single-turn (one user message per call), so a
         # simple text join is sufficient rather than a full message-role mapping
         prompt = "\n\n".join(m["content"] for m in messages)
@@ -30,4 +30,9 @@ class GeminiJudge(JudgeClient):
             contents=prompt,
             config={"max_output_tokens": max_tokens},
         )
-        return resp.text or ""
+        usage = getattr(resp, "usage_metadata", None)
+        return JudgeChatResult(
+            text=resp.text or "",
+            prompt_tokens=getattr(usage, "prompt_token_count", None) if usage else None,
+            completion_tokens=getattr(usage, "candidates_token_count", None) if usage else None,
+        )
