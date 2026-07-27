@@ -626,6 +626,122 @@ pre.output {
   margin-top: 4px;
   line-height: 1.35;
 }
+
+/* ---- Compare Studio Grid & Badges ---- */
+.compare-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+  width: 100%;
+}
+.compare-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--page);
+  cursor: pointer;
+  user-select: none;
+  transition: border-color .12s ease, background .12s ease, box-shadow .12s ease;
+  position: relative;
+}
+.compare-card:hover {
+  border-color: var(--border-strong);
+  background: var(--surface);
+}
+.compare-card.checked {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.compare-card.baseline {
+  border-color: #f59e0b;
+  background: rgba(245, 158, 11, 0.08);
+}
+.compare-card input[type="checkbox"] {
+  margin-top: 3px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.compare-card-info {
+  flex: 1;
+  min-width: 0;
+}
+.compare-card-title {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text);
+  word-break: break-word;
+}
+.compare-card-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 3px;
+}
+.compare-card-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+.compare-card-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 8px;
+}
+.pin-btn {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 7px;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all .12s ease;
+}
+.pin-btn:hover {
+  border-color: #f59e0b;
+  color: #f59e0b;
+}
+.pin-btn.pinned {
+  border-color: #f59e0b;
+  background: #f59e0b;
+  color: #000;
+}
+.delta-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10.5px;
+  font-weight: 600;
+}
+.delta-badge.better {
+  background: var(--good-soft);
+  color: var(--good);
+  border: 1px solid var(--good);
+}
+.delta-badge.worse {
+  background: var(--critical-soft);
+  color: var(--critical);
+  border: 1px solid var(--critical);
+}
+.verdict-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  background: var(--accent-soft);
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 16px;
+}
+
 .suite-card-footer {
   display: flex;
   justify-content: space-between;
@@ -734,3 +850,15 @@ pre.output {
 .cellmark-trunc  { background: var(--warning); }
 .cellmark-absent { background: transparent; border: 1px dashed var(--border-strong); }
 .grid-cell.clickable:hover .cellmark { outline: 2px solid var(--text); outline-offset: 1px; }
+
+/* ---- Confirm dialog (replaces native confirm(), which embedded browsers suppress) ---- */
+.confirm-card {
+  max-width: 460px;
+  width: 100%;
+}
+.confirm-card p {
+  color: var(--text-secondary);
+  font-size: 13.5px;
+  margin: 0;
+}
+button.primary.danger { background: var(--critical); }

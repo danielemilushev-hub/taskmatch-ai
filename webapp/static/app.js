@@ -49,6 +49,52 @@ async function api(path, opts) {
   return resp.json();
 }
 
+/**
+ * In-page replacement for window.confirm(), returning a Promise<boolean>.
+ *
+ * Native confirm() is NOT usable here: embedded/preview browsers (including
+ * the in-app pane this dashboard is usually viewed in) suppress native
+ * dialogs and make confirm() return false without ever showing anything.
+ * Every guarded action -- starting a paid frontier run, deleting a run --
+ * then silently did nothing, which is indistinguishable from a broken
+ * button. This modal works in every browser and doesn't block the event loop.
+ */
+function confirmDialog({ title = "Confirm", message = "", confirmLabel = "Confirm", danger = false } = {}) {
+  return new Promise((resolve) => {
+    const modal = document.getElementById("confirm-modal");
+    const acceptBtn = document.getElementById("confirm-accept");
+    const cancelBtn = document.getElementById("confirm-cancel");
+    document.getElementById("confirm-dialog-title").textContent = title;
+    document.getElementById("confirm-dialog-message").textContent = message;
+    acceptBtn.textContent = confirmLabel;
+    acceptBtn.className = danger ? "primary danger" : "primary";
+
+    const close = (result) => {
+      modal.style.display = "none";
+      acceptBtn.removeEventListener("click", onAccept);
+      cancelBtn.removeEventListener("click", onCancel);
+      modal.removeEventListener("click", onBackdrop);
+      document.removeEventListener("keydown", onKey);
+      resolve(result);
+    };
+    const onAccept = () => close(true);
+    const onCancel = () => close(false);
+    const onBackdrop = (e) => { if (e.target === modal) close(false); };
+    const onKey = (e) => {
+      if (e.key === "Escape") close(false);
+      if (e.key === "Enter") close(true);
+    };
+
+    acceptBtn.addEventListener("click", onAccept);
+    cancelBtn.addEventListener("click", onCancel);
+    modal.addEventListener("click", onBackdrop);
+    document.addEventListener("keydown", onKey);
+
+    modal.style.display = "flex";
+    acceptBtn.focus();
+  });
+}
+
 const SUITE_DESCRIPTIONS = {
   json_schema: "json_schema — asks the model to produce structured JSON matching a given schema (nested objects, enums, regex patterns, etc.), validated with jsonschema. Tests instruction-precision for structured output.",
   coding: "coding — 8 small HumanEval-style problems (factorial, palindrome check, binary search, etc.). The model's code is actually executed in a sandboxed subprocess against real test cases.",
@@ -616,11 +662,16 @@ document.getElementById("start-run").addEventListener("click", async () => {
   const judgeModel = document.getElementById("run-judge-model")?.value.trim();
   if (runFrontierGraded) {
     const numTasks = state.judgeSettings?.num_tasks ?? "?";
-    const proceed = confirm(
-      `This will also run the frontier-graded suite: ${numTasks} task(s) sent to ` +
-      `${judgeProvider}/${judgeModel || "?"} for generation AND grading ` +
-      `(${typeof numTasks === "number" ? numTasks * 2 : "2x"} paid API calls). This is non-deterministic and costs real money. Continue?`
-    );
+    const proceed = await confirmDialog({
+      title: "This run will spend money",
+      message:
+        `The frontier-graded suite will send ${numTasks} task(s) to ` +
+        `${judgeProvider}/${judgeModel || "?"} for generation AND grading — ` +
+        `${typeof numTasks === "number" ? numTasks * 2 : "2x"} paid API calls per local model.\n\n` +
+        `This phase is non-deterministic and is billed by your provider.`,
+      confirmLabel: "Run it",
+      danger: true,
+    });
     if (!proceed) return;
   }
 
@@ -873,7 +924,13 @@ async function loadRunList() {
     deleteBtn.title = `Delete run ${run.run_id}`;
     deleteBtn.addEventListener("click", async (e) => {
       e.stopPropagation();
-      if (!confirm(`Delete run ${run.run_id}? This cannot be undone.`)) return;
+      const ok = await confirmDialog({
+        title: "Delete this run?",
+        message: `Run ${run.run_id} and its saved report will be permanently removed. This cannot be undone.`,
+        confirmLabel: "Delete",
+        danger: true,
+      });
+      if (!ok) return;
       try {
         await api(`/api/runs/${run.run_id}`, { method: "DELETE" });
         state.selectedCompareRuns.delete(run.run_id);
@@ -1217,6 +1274,13 @@ function seriesColor(index) {
   return getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
 }
 
+// ---------- Compare Studio Run Picker & Presets ----------
+state.baselineRunId = null;
+state.baselineModelName = null;
+state.compareSearchQuery = "";
+state.compareProviderFilter = "";
+state.compareViewMode = "dedup";
+
 async function loadComparePicker() {
   const runs = await api("/api/runs");
   const picker = document.getElementById("compare-run-picker");
@@ -1224,27 +1288,266 @@ async function loadComparePicker() {
     picker.innerHTML = '<p class="empty-state">No runs yet -- start one from the New Run tab.</p>';
     return;
   }
+
+  // 1. Dynamic Provider Filter Chips
+  const providerSet = new Set();
+  runs.forEach((r) => {
+    (r.models || []).forEach((m) => {
+      const parts = m.split("/");
+      const provider = parts.length > 1 ? parts[0] : m;
+      if (provider) providerSet.add(provider);
+    });
+  });
+
+  const chipsContainer = document.getElementById("compare-provider-chips");
+  if (chipsContainer) {
+    chipsContainer.innerHTML = "";
+    const allProviders = ["", ...Array.from(providerSet)];
+    allProviders.forEach((prov) => {
+      const chip = document.createElement("label");
+      const isChecked = state.compareProviderFilter === prov;
+      chip.className = "chip" + (isChecked ? " checked" : "");
+      chip.textContent = prov ? prov : "All";
+      chip.style.fontSize = "11px";
+      chip.style.padding = "2px 8px";
+      chip.addEventListener("click", () => {
+        state.compareProviderFilter = prov;
+        loadComparePicker();
+      });
+      chipsContainer.appendChild(chip);
+    });
+  }
+
+  // 2. Filter & Deduplicate Runs
+  let displayRuns = runs;
+  if (state.compareViewMode === "dedup") {
+    const seenModels = new Set();
+    const deduped = [];
+    runs.forEach((r) => {
+      const mName = r.models?.[0] || r.run_id;
+      if (!seenModels.has(mName)) {
+        seenModels.add(mName);
+        deduped.push(r);
+      }
+    });
+    displayRuns = deduped;
+  }
+
+  const query = (state.compareSearchQuery || "").toLowerCase().trim();
+  const providerQuery = (state.compareProviderFilter || "").toLowerCase().trim();
+
+  const filteredRuns = displayRuns.filter((r) => {
+    const mName = (r.models || []).join(" ").toLowerCase();
+    const matchesSearch = !query || mName.includes(query) || r.run_id.toLowerCase().includes(query);
+    const matchesProvider = !providerQuery || mName.includes(providerQuery);
+    return matchesSearch && matchesProvider;
+  });
+
+  // 3. Baseline Summary Metrics Calculation
+  let baseRunData = null;
+  if (state.baselineRunId && compareRunCache.has(state.baselineRunId)) {
+    baseRunData = compareRunCache.get(state.baselineRunId);
+  }
+
   picker.innerHTML = "";
-  runs.forEach((run) => {
-    const label = document.createElement("label");
-    label.className = "chip" + (state.selectedCompareRuns.has(run.run_id) ? " checked" : "");
+  if (filteredRuns.length === 0) {
+    picker.innerHTML = '<p class="empty-state">No runs match filter.</p>';
+    return;
+  }
+
+  filteredRuns.forEach((run) => {
+    const mName = run.models?.[0] || run.run_id;
+    const isChecked = state.selectedCompareRuns.has(run.run_id);
+    const isBaseline = state.baselineRunId === run.run_id;
+
+    const card = document.createElement("label");
+    card.className = "compare-card" + (isChecked ? " checked" : "") + (isBaseline ? " baseline" : "");
+
     const cb = document.createElement("input");
     cb.type = "checkbox";
-    cb.checked = state.selectedCompareRuns.has(run.run_id);
-    cb.addEventListener("change", () => {
+    cb.checked = isChecked;
+    cb.addEventListener("change", (e) => {
+      e.stopPropagation();
       if (cb.checked) state.selectedCompareRuns.add(run.run_id);
       else state.selectedCompareRuns.delete(run.run_id);
-      label.classList.toggle("checked", cb.checked);
+      card.classList.toggle("checked", cb.checked);
       renderCompare();
     });
-    label.appendChild(cb);
-    label.appendChild(
-      document.createTextNode(`${formatRunDate(run.started_at)} — ${run.models.join(", ")}`)
-    );
-    picker.appendChild(label);
+    card.appendChild(cb);
+
+    const info = document.createElement("div");
+    info.className = "compare-card-info";
+
+    const titleRow = document.createElement("div");
+    titleRow.className = "compare-card-title";
+    titleRow.textContent = mName;
+    info.appendChild(titleRow);
+
+    const metaRow = document.createElement("div");
+    metaRow.className = "compare-card-meta";
+    const gpu = Array.isArray(run.hardware?.gpu) ? run.hardware.gpu[0]?.name : run.hardware?.gpu;
+    metaRow.textContent = `${formatRunDate(run.started_at || run.run_id)} · ${gpu || "GPU"}`;
+    info.appendChild(metaRow);
+
+    // Badges
+    const badges = document.createElement("div");
+    badges.className = "compare-card-badges";
+    const metaParsed = parseModelMetadata(mName);
+    if (metaParsed.family) {
+      const b = document.createElement("span");
+      b.className = "model-badge family";
+      b.textContent = metaParsed.family;
+      badges.appendChild(b);
+    }
+    if (metaParsed.size) {
+      const b = document.createElement("span");
+      b.className = "model-badge size";
+      b.textContent = metaParsed.size;
+      badges.appendChild(b);
+    }
+    info.appendChild(badges);
+
+    // Actions & Baseline Pin Button
+    const actions = document.createElement("div");
+    actions.className = "compare-card-actions";
+
+    const pinBtn = document.createElement("button");
+    pinBtn.type = "button";
+    pinBtn.className = "pin-btn" + (isBaseline ? " pinned" : "");
+    pinBtn.textContent = isBaseline ? "📌 BASELINE" : "📌 Set Baseline";
+    pinBtn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      if (isBaseline) {
+        state.baselineRunId = null;
+        state.baselineModelName = null;
+      } else {
+        state.baselineRunId = run.run_id;
+        state.baselineModelName = mName;
+        state.selectedCompareRuns.add(run.run_id);
+        if (!compareRunCache.has(run.run_id)) {
+          compareRunCache.set(run.run_id, await api(`/api/runs/${run.run_id}`));
+        }
+      }
+      loadComparePicker();
+      renderCompare();
+    });
+    actions.appendChild(pinBtn);
+
+    // Render Directional Delta Badge if baseline is set and this is not baseline
+    if (baseRunData && !isBaseline && compareRunCache.has(run.run_id)) {
+      const thisRun = compareRunCache.get(run.run_id);
+      const baseModelObj = Object.values(baseRunData.models)[0];
+      const thisModelObj = Object.values(thisRun.models)[0];
+
+      if (baseModelObj && thisModelObj) {
+        const getMeanPass = (mObj) => {
+          const suites = Object.values(mObj.suites || {});
+          if (suites.length === 0) return 0;
+          return suites.reduce((acc, s) => acc + (s.pass_rate || 0), 0) / suites.length;
+        };
+
+        const basePass = getMeanPass(baseModelObj);
+        const thisPass = getMeanPass(thisModelObj);
+        const diffPass = Math.round((thisPass - basePass) * 100);
+
+        const deltaBadge = document.createElement("span");
+        if (diffPass >= 0) {
+          deltaBadge.className = "delta-badge better";
+          deltaBadge.textContent = `🟢 +${diffPass}% pass`;
+        } else {
+          deltaBadge.className = "delta-badge worse";
+          deltaBadge.textContent = `🔴 ${Math.abs(diffPass)}% pass`;
+        }
+        actions.appendChild(deltaBadge);
+      }
+    }
+
+    info.appendChild(actions);
+    card.appendChild(info);
+    picker.appendChild(card);
   });
+
   renderCompare();
 }
+
+// Wire Preset Handlers
+const presetLatest = document.getElementById("compare-preset-latest");
+if (presetLatest) {
+  presetLatest.addEventListener("click", async () => {
+    const runs = await api("/api/runs");
+    state.selectedCompareRuns.clear();
+    const seen = new Set();
+    runs.forEach((r) => {
+      const mName = r.models?.[0] || r.run_id;
+      if (!seen.has(mName)) {
+        seen.add(mName);
+        state.selectedCompareRuns.add(r.run_id);
+      }
+    });
+    loadComparePicker();
+  });
+}
+
+const presetCoding = document.getElementById("compare-preset-coding");
+if (presetCoding) {
+  presetCoding.addEventListener("click", async () => {
+    const runs = await api("/api/runs");
+    state.selectedCompareRuns.clear();
+    for (const r of runs) {
+      if (!compareRunCache.has(r.run_id)) {
+        compareRunCache.set(r.run_id, await api(`/api/runs/${r.run_id}`));
+      }
+      const data = compareRunCache.get(r.run_id);
+      const hasCoding = Object.values(data.models).some((m) => m.suites?.coding || m.suites?.logic_math);
+      if (hasCoding) state.selectedCompareRuns.add(r.run_id);
+    }
+    loadComparePicker();
+  });
+}
+
+const presetReasoning = document.getElementById("compare-preset-reasoning");
+if (presetReasoning) {
+  presetReasoning.addEventListener("click", async () => {
+    const runs = await api("/api/runs");
+    state.selectedCompareRuns.clear();
+    for (const r of runs) {
+      if (!compareRunCache.has(r.run_id)) {
+        compareRunCache.set(r.run_id, await api(`/api/runs/${r.run_id}`));
+      }
+      const data = compareRunCache.get(r.run_id);
+      const hasReasoning = Object.values(data.models).some((m) => m.suites?.pattern_reasoning || m.suites?.logic_math);
+      if (hasReasoning) state.selectedCompareRuns.add(r.run_id);
+    }
+    loadComparePicker();
+  });
+}
+
+const compareClearAll = document.getElementById("compare-clear-all");
+if (compareClearAll) {
+  compareClearAll.addEventListener("click", () => {
+    state.selectedCompareRuns.clear();
+    state.baselineRunId = null;
+    state.baselineModelName = null;
+    loadComparePicker();
+  });
+}
+
+const compareSearchInput = document.getElementById("compare-search");
+if (compareSearchInput) {
+  compareSearchInput.addEventListener("input", (e) => {
+    state.compareSearchQuery = e.target.value;
+    loadComparePicker();
+  });
+}
+
+const modeRadios = document.querySelectorAll('input[name="compare-view-mode"]');
+modeRadios.forEach((radio) => {
+  radio.addEventListener("change", (e) => {
+    state.compareViewMode = e.target.value;
+    loadComparePicker();
+  });
+});
 
 function roundedTopBarPath(x, y, w, h, r) {
   r = Math.min(r, w / 2, Math.max(h, 0));
@@ -1795,7 +2098,7 @@ function handleCompareSort(colId) {
 
 // ---------- Compare Exports (Markdown & CSV) ----------
 function exportCompareMarkdown(series, categories, runs) {
-  let md = `# Localbench Comparison Report\n\nGenerated: ${new Date().toLocaleString()}\n\n`;
+  let md = `# TaskMatch AI — Comparison Report\n\nGenerated: ${new Date().toLocaleString()}\n\n`;
   md += `## Models & Hardware Compared\n\n`;
   md += `| Model | Run | CPU | RAM | GPU |\n|---|---|---|---|---|\n`;
   series.forEach((s) => {
@@ -1841,7 +2144,7 @@ function exportCompareCSV(series, categories, runs) {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.setAttribute("href", url);
-  link.setAttribute("download", `localbench_compare_${new Date().toISOString().slice(0, 10)}.csv`);
+  link.setAttribute("download", `taskmatch_compare_${new Date().toISOString().slice(0, 10)}.csv`);
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
@@ -2091,6 +2394,47 @@ async function renderCompare() {
   exportBar.appendChild(savingsBadge);
 
   output.appendChild(exportBar);
+
+  // 2-Fact Matchup Verdict Banner
+  if (series.length > 0) {
+    let topAccItem = null;
+    let topSpeedItem = null;
+
+    series.forEach((s) => {
+      let passSum = 0, speedSum = 0, count = 0;
+      categories.forEach((cat) => {
+        const suite = getSuite(s, cat);
+        if (suite) {
+          passSum += suite.pass_rate || 0;
+          speedSum += suite.avg_tokens_per_sec || 0;
+          count++;
+        }
+      });
+      const meanPass = count ? passSum / count : 0;
+      const meanSpeed = count ? speedSum / count : 0;
+      const itemData = { modelName: s.modelName, meanPass, meanSpeed, runId: s.runId };
+
+      if (!topAccItem || itemData.meanPass > topAccItem.meanPass) topAccItem = itemData;
+      if (!topSpeedItem || itemData.meanSpeed > topSpeedItem.meanSpeed) topSpeedItem = itemData;
+    });
+
+    let vsBaselineStr = "";
+    if (state.baselineRunId && compareRunCache.has(state.baselineRunId)) {
+      const baseRun = compareRunCache.get(state.baselineRunId);
+      const baseModelObj = Object.values(baseRun.models || {})[0];
+      if (baseModelObj && baseModelObj.suites) {
+        const sVals = Object.values(baseModelObj.suites);
+        const baseMean = sVals.reduce((acc, s) => acc + (s.pass_rate || 0), 0) / (sVals.length || 1);
+        const diffPct = Math.round((topAccItem.meanPass - baseMean) * 100);
+        vsBaselineStr = diffPct >= 0 ? ` (+${diffPct}% vs baseline)` : ` (${diffPct}% vs baseline)`;
+      }
+    }
+
+    const verdictBanner = document.createElement("div");
+    verdictBanner.className = "verdict-banner";
+    verdictBanner.textContent = `🏆 Highest mean pass rate: ${topAccItem.modelName} — ${Math.round(topAccItem.meanPass * 100)}%${vsBaselineStr}. Fastest: ${topSpeedItem.modelName} — ${fmtNum(topSpeedItem.meanSpeed, 0)} tok/s.`;
+    output.appendChild(verdictBanner);
+  }
 
   output.appendChild(buildModelDetailsTable(series, runs));
   output.appendChild(buildParetoChart(series, categories, getSuite));
