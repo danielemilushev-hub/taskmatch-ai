@@ -1,6 +1,12 @@
 # secrets
 .env
 
+# Your working config: contains your own runtime URL, model list, judge
+# provider/model, and (if you set it) long_context.source_file -- a real path
+# on your machine. Copy config.example.yaml to config.yaml to get started;
+# only the example is tracked.
+config.yaml
+
 # results (self-contained JSON/MD/PDF per run -- share individual files manually instead)
 results/runs/
 results/active/

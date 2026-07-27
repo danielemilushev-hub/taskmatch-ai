@@ -165,10 +165,17 @@ def models_catalog() -> dict:
 
 @app.get("/api/settings")
 def get_settings() -> dict:
+    from localbench.judge.factory import PROVIDER_PACKAGES, sdk_installed
+
     return {
         "runtime": settings_store.get_runtime_settings(),
         "judge": settings_store.get_judge_settings(),
         "keys": settings_store.key_status(),
+        # The judge SDKs are optional installs, so a configured provider with
+        # a valid key can still be unrunnable. Report that up front rather
+        # than letting the run fail on its first judge call.
+        "sdks": {p: sdk_installed(p) for p in settings_store.PROVIDER_ENV_VARS},
+        "sdk_packages": PROVIDER_PACKAGES,
     }
 
 
@@ -345,6 +352,15 @@ def start_run(payload: dict) -> dict:
             raise HTTPException(
                 400,
                 f"frontier judge requested but no API key is set for provider '{provider}' -- add one in Settings first",
+            )
+
+        from localbench.judge.factory import PROVIDER_PACKAGES, sdk_installed
+
+        if not sdk_installed(provider):
+            raise HTTPException(
+                400,
+                f"frontier judge requested but the {provider} SDK isn't installed. "
+                f"Install it with:  pip install {PROVIDER_PACKAGES.get(provider, provider)}",
             )
 
     run_id = run_manager.start_run(config, run_frontier_graded=run_frontier_graded)

@@ -1,49 +1,42 @@
 """Background sampling of RAM/CPU/VRAM usage during a suite run.
 
-Honesty matters more than coverage here: `psutil.virtual_memory().used` is
-TOTAL SYSTEM RAM in use across the whole machine -- not memory attributable
-to the model, not a delta, and it has NO relationship to VRAM (psutil can't
-see GPU memory at all). Reporting that raw number as "peak RAM" implied a
-per-model VRAM proxy it never was. Two fixes:
+Honesty matters more than coverage here, and the two memory figures measure
+genuinely different things:
 
-1. A baseline is captured before the suite starts, so what's reported is the
-   RAM *increase* during the suite -- still not model-specific (anything else
-   on the machine could account for some of it), but at least scoped to what
-   changed while the suite ran, not your OS/browser/everything-else's
-   pre-existing footprint.
-2. Actual VRAM delta is sampled via `nvidia-smi` when present. That's the
-   only vendor tool available that exposes a live memory-used query at all --
-   there is no AMD/Intel equivalent this tool can rely on cross-platform, so
-   for those GPUs vram_delta_mb stays None (reported as "not available",
-   never guessed).
+`ram_delta_gb` is the increase in TOTAL SYSTEM RAM over a baseline captured
+right before the suite starts. It is NOT model-attributable: the model is
+already loaded (into VRAM, on a GPU setup) before any suite begins, so for a
+fully GPU-resident model this number is mostly system noise plus whatever
+the runtime allocates host-side for the KV cache. A large value here is
+meaningful -- it usually means long prompts or a model that didn't fit in
+VRAM -- but a small value does NOT mean "this model is small".
+
+`vram_delta_mb` is the increase in GPU memory in use over the same baseline,
+which is the number that actually tracks a GPU-loaded model's working set.
+It comes from gpu_probe (nvidia-smi where available, otherwise Windows' own
+GPU performance counters), so unlike the previous nvidia-smi-only version it
+reports real figures on AMD/Intel too instead of "not available".
+
+Sampling cadence differs deliberately: RAM/CPU come from psutil and are
+essentially free, so they're sampled every `interval`. A GPU query costs
+~0.6s of subprocess work, so it runs on a much slower cadence -- frequent
+enough to catch a suite's peak, infrequent enough that the monitor doesn't
+meaningfully inflate the CPU number it is itself reporting.
 """
 
 from __future__ import annotations
 
-import shutil
-import subprocess
 import threading
+import time
 
 import psutil
 
+from .gpu_probe import query_gpu
 
-def _query_nvidia_vram_used_mb() -> float | None:
-    nvidia_smi = shutil.which("nvidia-smi")
-    if not nvidia_smi:
-        return None
-    try:
-        proc = subprocess.run(
-            [nvidia_smi, "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if proc.returncode != 0:
-            return None
-        # first GPU's figure; multi-GPU systems would need per-index handling
-        return float(proc.stdout.strip().splitlines()[0])
-    except Exception:
-        return None
+# How long to wait between GPU queries. Each costs ~0.6s of subprocess work;
+# at this cadence that's ~10% duty cycle on a single core, which is a
+# deliberate trade for having real VRAM numbers at all.
+_GPU_SAMPLE_INTERVAL_SECONDS = 6.0
 
 
 class ResourceMonitor:
@@ -53,25 +46,49 @@ class ResourceMonitor:
         self._peak_ram_gb = 0.0
         self._peak_cpu_percent = 0.0
         self._cpu_samples: list[float] = []
-        self._baseline_vram_mb = _query_nvidia_vram_used_mb()
-        self._peak_vram_mb: float | None = self._baseline_vram_mb
+        self._baseline_vram_mb: float | None = None
+        self._peak_vram_mb: float | None = None
+        self._peak_gpu_util: float | None = None
+        self._gpu_source: str | None = None
+        self._gpu_samples = 0
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+
+    def _sample_gpu(self) -> None:
+        gpu = query_gpu()
+        if gpu is None:
+            return
+        used = gpu["used_mb"]
+        self._gpu_source = gpu["source"]
+        self._gpu_samples += 1
+        if self._baseline_vram_mb is None:
+            self._baseline_vram_mb = used
+            self._peak_vram_mb = used
+        else:
+            self._peak_vram_mb = max(self._peak_vram_mb or 0.0, used)
+        util = gpu.get("util_percent")
+        if util is not None:
+            self._peak_gpu_util = max(self._peak_gpu_util or 0.0, float(util))
 
     def _run(self) -> None:
         psutil.cpu_percent(interval=None)  # prime the internal counter
         self._baseline_ram_gb = psutil.virtual_memory().used / (1024**3)
         self._peak_ram_gb = self._baseline_ram_gb
+        self._sample_gpu()  # baseline, taken before any generation starts
+        last_gpu = time.monotonic()
+
         while not self._stop.is_set():
             ram_gb = psutil.virtual_memory().used / (1024**3)
             cpu = psutil.cpu_percent(interval=None)
             self._peak_ram_gb = max(self._peak_ram_gb, ram_gb)
             self._peak_cpu_percent = max(self._peak_cpu_percent, cpu)
             self._cpu_samples.append(cpu)
-            if self._baseline_vram_mb is not None:
-                vram = _query_nvidia_vram_used_mb()
-                if vram is not None:
-                    self._peak_vram_mb = max(self._peak_vram_mb or 0, vram)
+
+            now = time.monotonic()
+            if now - last_gpu >= _GPU_SAMPLE_INTERVAL_SECONDS:
+                self._sample_gpu()
+                last_gpu = time.monotonic()
+
             self._stop.wait(self.interval)
 
     def __enter__(self) -> "ResourceMonitor":
@@ -82,7 +99,8 @@ class ResourceMonitor:
     def __exit__(self, *exc_info: object) -> None:
         self._stop.set()
         if self._thread:
-            self._thread.join(timeout=2)
+            # generous join: a GPU query may be mid-flight when we stop
+            self._thread.join(timeout=25)
 
     def summary(self) -> dict:
         avg_cpu = sum(self._cpu_samples) / len(self._cpu_samples) if self._cpu_samples else None
@@ -97,6 +115,12 @@ class ResourceMonitor:
             "peak_ram_gb_total_system": round(self._peak_ram_gb, 2),
             "peak_cpu_percent": round(self._peak_cpu_percent, 1),
             "avg_cpu_percent": round(avg_cpu, 1) if avg_cpu is not None else None,
-            "vram_delta_mb": vram_delta_mb,  # None means "not available" (non-NVIDIA GPU), never a guess
+            # None means "no GPU probe worked here", never a guess.
+            "vram_delta_mb": vram_delta_mb,
+            "peak_vram_mb_total": round(self._peak_vram_mb, 1) if self._peak_vram_mb is not None else None,
+            "baseline_vram_mb": round(self._baseline_vram_mb, 1) if self._baseline_vram_mb is not None else None,
+            "peak_gpu_util_percent": round(self._peak_gpu_util, 1) if self._peak_gpu_util is not None else None,
+            "gpu_source": self._gpu_source,
             "samples": len(self._cpu_samples),
+            "gpu_samples": self._gpu_samples,
         }

@@ -383,6 +383,8 @@ async function loadFrontierJudgeCard() {
     const settings = await api("/api/settings");
     state.judgeSettings = settings.judge;
     state.judgeKeys = settings.keys;
+    state.judgeSdks = settings.sdks || null;
+    state.judgeSdkPackages = settings.sdk_packages || null;
     const provider = settings.judge.provider || "anthropic";
     const hasKeyForProvider = !!settings.keys[provider];
 
@@ -424,12 +426,28 @@ async function updateFrontierJudgeInfo() {
   const numTasks = state.judgeSettings?.num_tasks ?? 6;
   const passThreshold = state.judgeSettings?.pass_threshold ?? 7;
 
+  const costEl2 = document.getElementById("frontier-judge-cost");
   const hasKey = !!(state.judgeKeys && state.judgeKeys[provider]);
   if (!hasKey) {
     includeEl.checked = false;
     includeEl.disabled = true;
     detailEl.textContent = `No API key set for ${PROVIDER_LABELS[provider] || provider} -- add one in Settings to use it as the judge.`;
     estimateEl.textContent = "";
+    if (costEl2) costEl2.textContent = "";
+    return;
+  }
+  // A key alone isn't enough: each provider's SDK is an optional install, so
+  // check it here rather than letting the run die on its first judge call.
+  const sdkOk = !state.judgeSdks || state.judgeSdks[provider] !== false;
+  if (!sdkOk) {
+    const pkg = (state.judgeSdkPackages && state.judgeSdkPackages[provider]) || provider;
+    includeEl.checked = false;
+    includeEl.disabled = true;
+    detailEl.textContent =
+      `The ${PROVIDER_LABELS[provider] || provider} SDK isn't installed, so this judge can't run yet. ` +
+      `Install it with:  pip install ${pkg}`;
+    estimateEl.textContent = "";
+    if (costEl2) costEl2.textContent = "";
     return;
   }
   includeEl.disabled = false;
@@ -929,15 +947,21 @@ function renderRunDetail(data, suiteFilterVal, modelFilterVal) {
   let html = "";
   suiteNames.forEach((suiteName) => {
     if (suiteFilterVal && suiteFilterVal !== suiteName) return;
-    html += `<h3>${suiteName}</h3><table><tr>
+    html += `<h3>${escapeHtml(suiteName)}</h3><table><tr>
       <th>Model</th><th>Pass Rate (Click for inspection)</th><th>Avg Latency</th><th>Avg TTFT</th>
-      <th>Tokens/sec</th><th>RAM &Delta;</th><th>VRAM &Delta;</th></tr>`;
+      <th>Tokens/sec</th>
+      <th title="Total GPU memory in use at this suite's peak -- the model's actual VRAM footprint.">VRAM used &#9432;</th>
+      <th title="Growth in GPU memory during this suite only. Small is normal: the model is already loaded before the suite starts, so this mostly reflects KV-cache growth, not the model's size.">VRAM &Delta; &#9432;</th>
+      <th title="Peak GPU utilization sampled during this suite.">GPU %</th>
+      <th title="Growth in TOTAL SYSTEM RAM during this suite, over a baseline taken just before it started. Not model-attributable -- a small number here does NOT mean the model is small, since a GPU-resident model uses VRAM, not RAM.">RAM &Delta; &#9432;</th></tr>`;
     Object.entries(data.models).forEach(([modelName, modelResult]) => {
       if (modelFilterVal && modelFilterVal !== modelName) return;
       const suite = modelResult.suites[suiteName];
       if (!suite) return;
       const resource = suite.resource_usage || {};
       const vram = resource.vram_delta_mb;
+      const vramTotal = resource.peak_vram_mb_total;
+      const gpuUtil = resource.peak_gpu_util_percent;
       const pillClass = suite.pass_rate >= 0.7 ? "pass" : "fail";
       const icon = suite.pass_rate >= 0.7 ? "✓" : "✗";
       const truncatedCount = (suite.problems || []).filter((p) => p.truncated).length;
@@ -954,8 +978,10 @@ function renderRunDetail(data, suiteFilterVal, modelFilterVal) {
         <td>${fmtNum(suite.avg_latency_seconds)}s</td>
         <td>${fmtNum(suite.avg_ttft_seconds)}s</td>
         <td>${fmtNum(suite.avg_tokens_per_sec)}</td>
+        <td>${vramTotal == null ? '<span class="muted">not captured</span>' : fmtNum(vramTotal / 1024, 2) + " GB"}</td>
+        <td>${vram == null ? '<span class="muted">not captured</span>' : fmtNum(vram, 0) + " MB"}</td>
+        <td>${gpuUtil == null ? '<span class="muted">n/a</span>' : fmtNum(gpuUtil, 0) + "%"}</td>
         <td>${fmtNum(resource.ram_delta_gb, 2)} GB</td>
-        <td>${vram == null ? "n/a (non-NVIDIA)" : fmtNum(vram, 0) + " MB"}</td>
       </tr>`;
     });
     html += "</table>";
@@ -1603,6 +1629,8 @@ function buildFullComparisonTable(series, categories, getSuite, runs) {
         tokSec: suite.avg_tokens_per_sec,
         ramDelta: resource.ram_delta_gb,
         vramDelta: resource.vram_delta_mb,
+        vramTotal: resource.peak_vram_mb_total,
+        gpuUtil: resource.peak_gpu_util_percent,
         peakCpu: resource.peak_cpu_percent,
         suiteData: suite,
       });
@@ -1636,8 +1664,10 @@ function buildFullComparisonTable(series, categories, getSuite, runs) {
     { id: "latency", name: "Avg Latency" },
     { id: "ttft", name: "Avg TTFT" },
     { id: "tokSec", name: "Tokens/sec" },
-    { id: "ramDelta", name: "RAM Δ" },
+    { id: "vramTotal", name: "VRAM used" },
     { id: "vramDelta", name: "VRAM Δ" },
+    { id: "gpuUtil", name: "GPU %" },
+    { id: "ramDelta", name: "RAM Δ" },
     { id: "peakCpu", name: "Peak CPU %" },
   ];
 
@@ -1723,13 +1753,24 @@ function buildFullComparisonTable(series, categories, getSuite, runs) {
     }
     row.appendChild(tdTokSec);
 
-    const tdRam = document.createElement("td");
-    tdRam.textContent = `${fmtNum(r.ramDelta, 2)} GB`;
-    row.appendChild(tdRam);
+    const tdVramTotal = document.createElement("td");
+    tdVramTotal.textContent = r.vramTotal == null ? "not captured" : `${fmtNum(r.vramTotal / 1024, 2)} GB`;
+    tdVramTotal.title = "Total GPU memory in use at this suite's peak -- the model's actual VRAM footprint.";
+    row.appendChild(tdVramTotal);
 
     const tdVram = document.createElement("td");
-    tdVram.textContent = vram == null ? "n/a" : `${fmtNum(vram, 0)} MB`;
+    tdVram.textContent = vram == null ? "not captured" : `${fmtNum(vram, 0)} MB`;
+    tdVram.title = "Growth during this suite only. Small is normal -- the model is already loaded before the suite starts.";
     row.appendChild(tdVram);
+
+    const tdGpuUtil = document.createElement("td");
+    tdGpuUtil.textContent = r.gpuUtil == null ? "n/a" : `${fmtNum(r.gpuUtil, 0)}%`;
+    row.appendChild(tdGpuUtil);
+
+    const tdRam = document.createElement("td");
+    tdRam.textContent = `${fmtNum(r.ramDelta, 2)} GB`;
+    tdRam.title = "Growth in TOTAL SYSTEM RAM, not model-attributable. A GPU-resident model uses VRAM, not RAM.";
+    row.appendChild(tdRam);
 
     const tdCpu = document.createElement("td");
     tdCpu.textContent = `${fmtNum(r.peakCpu, 1)}%`;
@@ -2088,10 +2129,170 @@ async function renderCompare() {
   );
 
   output.appendChild(buildTTFTChart(series, categories, getSuite));
+  output.appendChild(buildPerSuiteBreakdown(series, categories, getSuite));
   output.appendChild(buildFullComparisonTable(series, categories, getSuite, runs));
 
   const frontierSection = buildFrontierJudgeSection(series, runs, getSuite);
   if (frontierSection) output.appendChild(frontierSection);
+}
+
+// Per-suite, per-problem outcome grid. The aggregate charts above answer
+// "which model is better"; this answers "on WHICH task, and did every model
+// fail the same one?" -- a problem all models fail is usually a problem with
+// the problem, and that's invisible in a pass-rate average.
+function buildPerSuiteBreakdown(series, categories, getSuite) {
+  const wrap = document.createElement("div");
+  wrap.className = "card";
+
+  const heading = document.createElement("h2");
+  heading.textContent = "Per-problem results by suite";
+  wrap.appendChild(heading);
+
+  const note = document.createElement("p");
+  note.className = "muted";
+  note.textContent =
+    "Every individual task, per model. Click any cell to inspect that problem's prompt, response and error. " +
+    "A column where every model fails usually says more about the task than the models.";
+  wrap.appendChild(note);
+
+  const legend = document.createElement("div");
+  legend.className = "chart-legend";
+  [
+    ["pass", "Passed"],
+    ["fail", "Failed"],
+    ["trunc", "Failed (hit token limit)"],
+    ["absent", "Not run"],
+  ].forEach(([cls, label]) => {
+    const item = document.createElement("span");
+    item.className = "legend-item";
+    const swatch = document.createElement("span");
+    swatch.className = `cellmark cellmark-${cls}`;
+    item.appendChild(swatch);
+    item.appendChild(document.createTextNode(label));
+    legend.appendChild(item);
+  });
+  wrap.appendChild(legend);
+
+  categories.forEach((cat) => {
+    // Union of problem ids across models, preserving first-seen order so the
+    // columns line up even when a model errored out partway through a suite.
+    const problemIds = [];
+    const seen = new Set();
+    series.forEach((s) => {
+      (getSuite(s, cat)?.problems || []).forEach((p) => {
+        if (!seen.has(p.problem_id)) {
+          seen.add(p.problem_id);
+          problemIds.push(p.problem_id);
+        }
+      });
+    });
+    if (problemIds.length === 0) return;
+
+    const subHeading = document.createElement("h3");
+    subHeading.textContent = `${SUITE_METADATA[cat]?.title || cat} (${problemIds.length} tasks)`;
+    wrap.appendChild(subHeading);
+
+    const scroller = document.createElement("div");
+    scroller.className = "grid-scroll";
+    const table = document.createElement("table");
+    table.className = "problem-grid";
+
+    const headRow = document.createElement("tr");
+    const corner = document.createElement("th");
+    corner.textContent = "Model";
+    headRow.appendChild(corner);
+    problemIds.forEach((pid) => {
+      const th = document.createElement("th");
+      th.className = "grid-col-head";
+      th.title = pid;
+      th.textContent = pid;
+      headRow.appendChild(th);
+    });
+    const rateHead = document.createElement("th");
+    rateHead.textContent = "Pass rate";
+    headRow.appendChild(rateHead);
+    table.appendChild(headRow);
+
+    series.forEach((s) => {
+      const suite = getSuite(s, cat);
+      const row = document.createElement("tr");
+      const nameCell = document.createElement("td");
+      nameCell.className = "grid-row-head";
+      nameCell.textContent = s.modelName;
+      nameCell.title = `${s.modelName} (${s.runId})`;
+      row.appendChild(nameCell);
+
+      const byId = new Map((suite?.problems || []).map((p) => [p.problem_id, p]));
+      problemIds.forEach((pid) => {
+        const p = byId.get(pid);
+        const td = document.createElement("td");
+        td.className = "grid-cell";
+        const mark = document.createElement("span");
+        let cls = "absent";
+        let tip = `${pid}: not run for this model`;
+        if (p) {
+          if (p.passed) {
+            cls = "pass";
+            tip = `${pid}: passed`;
+          } else if (p.truncated) {
+            cls = "trunc";
+            tip = `${pid}: hit the token limit before finishing -- ${p.error || ""}`;
+          } else {
+            cls = "fail";
+            tip = `${pid}: ${p.error || "failed"}`;
+          }
+        }
+        mark.className = `cellmark cellmark-${cls}`;
+        td.title = tip;
+        if (p && suite) {
+          td.classList.add("clickable");
+          td.addEventListener("click", () => openInspectorModalByData(s.runId, s.modelName, cat));
+        }
+        td.appendChild(mark);
+        row.appendChild(td);
+      });
+
+      const rateCell = document.createElement("td");
+      rateCell.className = "grid-rate";
+      rateCell.textContent = suite ? `${fmtPct(suite.pass_rate)} (${suite.pass_count}/${suite.total})` : "n/a";
+      row.appendChild(rateCell);
+
+      table.appendChild(row);
+    });
+
+    // "How many models solved this task" -- makes a universally-failed task
+    // (or a trivially-passed one) obvious at a glance.
+    const footRow = document.createElement("tr");
+    const footLabel = document.createElement("td");
+    footLabel.className = "grid-row-head";
+    footLabel.textContent = "Solved by";
+    footLabel.title = "How many of the compared models passed this task.";
+    footRow.appendChild(footLabel);
+    problemIds.forEach((pid) => {
+      let passed = 0;
+      let attempted = 0;
+      series.forEach((s) => {
+        const p = (getSuite(s, cat)?.problems || []).find((x) => x.problem_id === pid);
+        if (p) {
+          attempted++;
+          if (p.passed) passed++;
+        }
+      });
+      const td = document.createElement("td");
+      td.className = "grid-tally";
+      td.textContent = attempted ? `${passed}/${attempted}` : "-";
+      if (attempted && passed === 0) td.classList.add("tally-none");
+      if (attempted && passed === attempted) td.classList.add("tally-all");
+      footRow.appendChild(td);
+    });
+    footRow.appendChild(document.createElement("td"));
+    table.appendChild(footRow);
+
+    scroller.appendChild(table);
+    wrap.appendChild(scroller);
+  });
+
+  return wrap;
 }
 
 function buildFrontierJudgeSection(series, runs, getSuite) {

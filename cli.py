@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 import webbrowser
 from pathlib import Path
 
@@ -25,7 +26,22 @@ ALL_SUITES = [
 ]
 
 
+def _make_stdout_unicode_safe() -> None:
+    """Reports contain non-ASCII (the Δ in "RAM Δ", em dashes), and a Windows
+    console defaults to a legacy codepage -- cp1251 here, cp437/cp1252
+    elsewhere. Printing the report then raises UnicodeEncodeError and takes
+    down the CLI *after* the benchmark already succeeded and saved, which
+    looks like the run itself failed. Prefer UTF-8, and degrade to replacement
+    characters rather than crashing on a console that can't represent them."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, OSError, ValueError):
+            pass
+
+
 def cmd_run(args: argparse.Namespace) -> None:
+    _make_stdout_unicode_safe()
     config = load_config(args.config)
 
     if args.model:

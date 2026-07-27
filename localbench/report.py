@@ -74,12 +74,15 @@ def render_markdown(run: dict) -> str:
     lines.append(_hardware_block(run.get("hardware", {})))
     lines.append("")
     lines.append(
-        "*RAM Δ / VRAM Δ below are the increase over each suite's own baseline "
-        "(sampled right before it starts), not this model's total footprint or "
-        "your whole system's usage. VRAM Δ needs `nvidia-smi` (NVIDIA only) -- "
-        "shows `n/a` on AMD/Intel GPUs since no equivalent live-memory query "
-        "exists cross-platform; check your runtime's own UI (e.g. LM Studio's "
-        "Developer tab) for VRAM on those.*"
+        "*`VRAM used` is total GPU memory in use at each suite's peak -- the model's "
+        "actual footprint. `VRAM Δ` and `RAM Δ` are the increase over a baseline "
+        "sampled just before that suite started; both are normally small, because "
+        "the model is already loaded before any suite begins, so they mostly track "
+        "KV-cache growth rather than model size. A small `RAM Δ` does NOT mean a "
+        "small model -- a GPU-resident model lives in VRAM, not RAM. GPU figures "
+        "come from `nvidia-smi` where available, otherwise Windows' own GPU "
+        "performance counters (which work on AMD/Intel too); `not captured` means "
+        "no GPU probe was available, never a guess.*"
     )
 
     deterministic_suites = [s for s in _suite_names(run) if s != "frontier_graded"]
@@ -89,22 +92,25 @@ def render_markdown(run: dict) -> str:
         lines.append("")
         lines.append(
             "| Model | Pass Rate | Avg Latency (s) | Avg TTFT (s) | Avg Tokens/sec | "
-            "RAM Δ (GB) | VRAM Δ (MB) | Peak CPU % |"
+            "VRAM used (GB) | VRAM Δ (MB) | GPU % | RAM Δ (GB) | Peak CPU % |"
         )
-        lines.append("|---|---|---|---|---|---|---|---|")
+        lines.append("|---|---|---|---|---|---|---|---|---|---|")
         for model_name, model_result in run["models"].items():
             suite = model_result["suites"].get(suite_name)
             if suite is None:
                 continue
             pass_str = f"{_fmt_pct(suite['pass_rate'])} ({suite['pass_count']}/{suite['total']})"
             resource = suite.get("resource_usage") or {}
+            vram_total = resource.get("peak_vram_mb_total")
             lines.append(
                 f"| {model_name} | {pass_str} | "
                 f"{_fmt_num(suite['avg_latency_seconds'])} | "
                 f"{_fmt_num(suite.get('avg_ttft_seconds'))} | "
                 f"{_fmt_num(suite['avg_tokens_per_sec'])} | "
-                f"{_fmt_num(resource.get('ram_delta_gb'), 2)} | "
+                f"{_fmt_num(vram_total / 1024 if vram_total is not None else None, 2)} | "
                 f"{_fmt_num(resource.get('vram_delta_mb'), 0)} | "
+                f"{_fmt_num(resource.get('peak_gpu_util_percent'), 0)} | "
+                f"{_fmt_num(resource.get('ram_delta_gb'), 2)} | "
                 f"{_fmt_num(resource.get('peak_cpu_percent'), 1)} |"
             )
         lines.append("")

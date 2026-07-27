@@ -46,7 +46,13 @@ six deterministic suites' scoring.
 
 ```bash
 pip install -r requirements.txt
+cp config.example.yaml config.yaml     # Windows: copy config.example.yaml config.yaml
 ```
+
+`config.yaml` is **gitignored on purpose** — it holds your own runtime URL,
+model list, judge choice and (optionally) a real path from your disk, none of
+which belongs in a shared repo. Only `config.example.yaml` is tracked, so
+your working config can never be pushed by accident.
 
 Edit `config.yaml`:
 

@@ -6,58 +6,22 @@ the saved run JSON): so users can watch RAM/CPU/GPU/disk while a run is in
 progress and notice a spillover as it happens, not just after the fact.
 
 CPU/RAM/disk throughput come from psutil (fast, in-process, reliable). GPU
-memory + utilization come from Windows' own performance counters via a
-short-lived `Get-Counter` call -- the only mechanism that works for ANY GPU
-vendor (nvidia-smi is NVIDIA-only; these counters are what Task Manager's
-own GPU tab reads from, tracked by the OS's display driver framework, not a
-vendor tool). Each Get-Counter call takes ~2-3s regardless of whether the
-PowerShell process is fresh or reused -- that overhead is inherent to
-Get-Counter itself (confirmed by testing both ways), so GPU samples refresh
-on a slower cadence than CPU/RAM/disk rather than trying to fight it with a
-persistent-process protocol that wouldn't actually be faster.
+memory + utilization come from the shared gpu_probe module, so the live
+panel and the per-suite deltas saved into a run always report the same
+figure from the same source rather than drifting apart. That probe costs
+~0.6s per call, so GPU samples refresh on a slower cadence than
+CPU/RAM/disk.
 """
 
 from __future__ import annotations
 
-import json
-import platform
-import subprocess
 import threading
 import time
 from collections import deque
 
 import psutil
 
-_GPU_SCRIPT = r"""
-$ErrorActionPreference = "SilentlyContinue"
-$gpuMem = Get-Counter -Counter "\GPU Adapter Memory(*)\Dedicated Usage"
-$gpuEngine = Get-Counter -Counter "\GPU Engine(*)\Utilization Percentage"
-$gpuMemTotal = ($gpuMem.CounterSamples | Measure-Object -Property CookedValue -Sum).Sum
-$gpuUtilMax = ($gpuEngine.CounterSamples | Measure-Object -Property CookedValue -Maximum).Maximum
-[PSCustomObject]@{ gpu_mem_bytes = $gpuMemTotal; gpu_util_percent = $gpuUtilMax } | ConvertTo-Json -Compress
-"""
-
-
-def _query_gpu_windows() -> dict | None:
-    if platform.system() != "Windows":
-        return None
-    try:
-        proc = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", _GPU_SCRIPT],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if proc.returncode != 0 or not proc.stdout.strip():
-            return None
-        data = json.loads(proc.stdout.strip().splitlines()[-1])
-        mem_bytes = data.get("gpu_mem_bytes")
-        return {
-            "gpu_mem_used_bytes": mem_bytes,
-            "gpu_util_percent": data.get("gpu_util_percent"),
-        }
-    except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError, IndexError):
-        return None
+from .gpu_probe import query_gpu
 
 
 class LiveHardwareMonitor:
@@ -109,12 +73,12 @@ class LiveHardwareMonitor:
         self._last_disk_time = now
 
         if self._tick % 3 == 0:
-            gpu = _query_gpu_windows()
+            gpu = query_gpu()
             if gpu is not None:
                 self._last_gpu = gpu
 
         gpu_data = self._last_gpu or {}
-        gpu_mem_bytes = gpu_data.get("gpu_mem_used_bytes")
+        gpu_mem_mb = gpu_data.get("used_mb")
 
         return {
             "timestamp": time.time(),
@@ -123,8 +87,8 @@ class LiveHardwareMonitor:
             "ram_total_gb": round(mem.total / (1024**3), 2),
             "disk_read_mb_s": round(read_bytes_sec / (1024**2), 2),
             "disk_write_mb_s": round(write_bytes_sec / (1024**2), 2),
-            "gpu_util_percent": gpu_data.get("gpu_util_percent"),
-            "gpu_mem_used_gb": round(gpu_mem_bytes / (1024**3), 2) if gpu_mem_bytes is not None else None,
+            "gpu_util_percent": gpu_data.get("util_percent"),
+            "gpu_mem_used_gb": round(gpu_mem_mb / 1024, 2) if gpu_mem_mb is not None else None,
         }
 
     def latest_samples(self) -> list[dict]:
