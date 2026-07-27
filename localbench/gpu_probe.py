@@ -27,15 +27,42 @@ import subprocess
 # Dedicated (on-card) memory summed across adapters, plus the busiest engine's
 # utilization. Instance names are opaque LUIDs, so aggregate rather than trying
 # to map them to a specific physical card.
+# GPU engine counters are per (process, engine) -- instance names look like
+# pid_6120_luid_..._eng_0_engtype_3D -- so several processes report against the
+# same physical engine. A bare Maximum across instances undercounts when work is
+# split across processes, and a bare Sum across everything double-counts
+# unrelated engines (3D + Copy + VideoDecode), which is how a "210%" reading
+# happens. Task Manager's model is the correct one: total each ENGINE TYPE
+# across processes, then take the busiest engine type. Utilization is a
+# fraction of wall-clock time an engine was busy, so it cannot exceed 100% by
+# definition; anything above is counter overshoot and is clamped.
 _CIM_SCRIPT = r"""
 $ErrorActionPreference = 'SilentlyContinue'
 $mem = Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUAdapterMemory
 $eng = Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine
+$util = 0
+if ($eng) {
+  $perType = $eng | Group-Object { ($_.Name -split 'engtype_')[-1] } | ForEach-Object {
+    ($_.Group | Measure-Object -Property UtilizationPercentage -Sum).Sum
+  }
+  $util = ($perType | Measure-Object -Maximum).Maximum
+}
 [PSCustomObject]@{
   used_bytes = [double](($mem | Measure-Object -Property DedicatedUsage -Sum).Sum)
-  util       = [double](($eng | Measure-Object -Property UtilizationPercentage -Maximum).Maximum)
+  util       = [double]$util
 } | ConvertTo-Json -Compress
 """
+
+
+def _clamp_percent(value) -> float | None:
+    """Utilization is a share of wall-clock time and cannot exceed 100%.
+    Clamp rather than surface a physically impossible number."""
+    if value is None:
+        return None
+    try:
+        return max(0.0, min(100.0, float(value)))
+    except (TypeError, ValueError):
+        return None
 
 
 def _probe_nvidia() -> dict | None:
@@ -61,7 +88,7 @@ def _probe_nvidia() -> dict | None:
             utils.append(float(parts[1]))
         return {
             "used_mb": used_mb,
-            "util_percent": max(utils) if utils else None,
+            "util_percent": _clamp_percent(max(utils)) if utils else None,
             "source": "nvidia-smi",
         }
     except (subprocess.SubprocessError, ValueError, OSError):
@@ -84,7 +111,7 @@ def _probe_windows_cim() -> dict | None:
             return None
         return {
             "used_mb": float(used_bytes) / (1024**2),
-            "util_percent": data.get("util"),
+            "util_percent": _clamp_percent(data.get("util")),
             "source": "windows_gpu_counters",
         }
     except (subprocess.SubprocessError, json.JSONDecodeError, ValueError, OSError, IndexError):

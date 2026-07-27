@@ -568,10 +568,32 @@ pre.output {
   border: 1px solid var(--border);
   color: var(--text-secondary);
 }
-.model-badge.family { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
-.model-badge.size { background: var(--good-soft); border-color: var(--good); color: var(--good); }
-.model-badge.quant { background: var(--warning-soft); border-color: var(--warning); color: var(--warning); }
-.model-badge.warn { background: var(--critical-soft); border-color: var(--critical); color: var(--critical); }
+.model-badge.family {
+  background: rgba(59, 130, 246, 0.12);
+  border: 1px solid rgba(59, 130, 246, 0.4);
+  color: #60a5fa;
+}
+.model-badge.size {
+  background: rgba(16, 185, 129, 0.12);
+  border: 1px solid rgba(16, 185, 129, 0.4);
+  color: #34d399;
+}
+.model-badge.quant {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-weight: 500;
+}
+.model-badge.capability {
+  background: rgba(139, 92, 246, 0.12);
+  border: 1px solid rgba(139, 92, 246, 0.4);
+  color: #c084fc;
+}
+.model-badge.warn {
+  background: var(--critical-soft);
+  border: 1px solid var(--critical);
+  color: var(--critical);
+}
 
 /* ---- Suite Cards Grid & Badges ---- */
 .suite-grid {
@@ -891,6 +913,38 @@ button.primary.danger { background: var(--critical); }
   top: -4px;
   background: var(--surface);
 }
+nav.tabs button {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 13.5px;
+  font-weight: 500;
+  padding: 8px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  position: relative;
+  transition: color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+}
+nav.tabs button:hover {
+  color: var(--text);
+  background: var(--surface);
+}
+nav.tabs button.active {
+  color: var(--accent);
+  font-weight: 600;
+  background: var(--accent-soft);
+  box-shadow: inset 0 -2px 0 0 var(--accent), 0 2px 8px rgba(0, 210, 255, 0.2);
+}
+
+.empty-state {
+  text-align: center;
+  padding: 36px 20px;
+  color: var(--text-muted);
+  font-size: 13.5px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.015);
+}
 .model-picker-item {
   display: flex;
   align-items: center;
@@ -920,4 +974,170 @@ button.primary.danger { background: var(--critical); }
   padding: 10px 8px;
   font-size: 12.5px;
   color: var(--text-muted);
+}
+
+/* ---- Compare Output Sub-Tabs & Sticky Navigation ---- */
+.compare-subtabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 8px;
+  position: sticky;
+  top: 0;
+  background: var(--page);
+  z-index: 20;
+
+}
+.compare-tab-btn {
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all .15s ease;
+}
+.compare-tab-btn:hover {
+  color: var(--text);
+  background: var(--surface);
+}
+.compare-tab-btn.active {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+/* Interactive Chart Legend Dimming */
+.chart-legend .item {
+  cursor: pointer;
+  user-select: none;
+  transition: opacity .15s ease, filter .15s ease;
+}
+.chart-legend .item:hover {
+  opacity: 0.85;
+}
+.chart-legend .item.dimmed {
+  opacity: 0.35;
+  filter: grayscale(80%);
+}
+
+/* ---- TaskMatch Playground Split Workspace ---- */
+.pg-workspace {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-top: 14px;
+}
+@media (max-width: 900px) {
+  .pg-workspace {
+    grid-template-columns: 1fr;
+  }
+}
+.pg-pane {
+  display: flex;
+  flex-direction: column;
+}
+.pg-pane.left {
+  padding-right: 8px;
+}
+.pg-pane.right {
+  border-left: 1px solid var(--border);
+  padding-left: 16px;
+}
+@media (max-width: 900px) {
+  .pg-pane.right {
+    border-left: none;
+    border-top: 1px solid var(--border);
+    padding-left: 0;
+    padding-top: 16px;
+  }
+}
+
+/* ---- TaskMatch Settings Hub Grid ---- */
+.settings-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  width: 100%;
+}
+@media (max-width: 900px) {
+  .settings-grid {
+    grid-template-columns: 1fr;
+  }
+}
+.settings-col {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.key-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 8px;
+  border-radius: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+.key-row-label {
+  width: 100px;
+  font-weight: 600;
+  font-size: 12.5px;
+}
+/* ---- TaskMatch History Hub Cards ---- */
+.history-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--page);
+  cursor: pointer;
+  transition: border-color .12s ease, background .12s ease;
+  flex-wrap: wrap;
+}
+.history-card:hover {
+  border-color: var(--border-strong);
+  background: var(--surface);
+}
+.history-card-info {
+  flex: 1;
+  min-width: 220px;
+}
+.history-card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  font-size: 13.5px;
+  color: var(--text);
+  flex-wrap: wrap;
+}
+.history-card-meta {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+.history-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+
+
+
+
+.live-monitor-scale {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-align: right;
+  margin-top: 2px;
+  font-variant-numeric: tabular-nums;
 }

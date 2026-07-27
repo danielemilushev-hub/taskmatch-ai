@@ -27,6 +27,11 @@ document.getElementById("theme-toggle").addEventListener("click", () => {
 });
 
 // ---------- tabs ----------
+function switchView(viewName) {
+  const btn = document.querySelector(`nav.tabs button[data-view="${viewName}"]`);
+  if (btn) btn.click();
+}
+
 document.querySelectorAll("nav.tabs button").forEach((btn) => {
   btn.addEventListener("click", () => {
     document.querySelectorAll("nav.tabs button").forEach((b) => b.classList.remove("active"));
@@ -182,11 +187,32 @@ function parseModelMetadata(name) {
   return meta;
 }
 
+function updateRunScopeBar() {
+  const scopeTextEl = document.getElementById("run-scope-text");
+  if (!scopeTextEl) return;
+
+  const modelCount = state.selectedModels.size;
+  const suiteCount = state.selectedSuites.size;
+
+  let totalTasksPerModel = 0;
+  if (state.config && state.config.suites) {
+    state.selectedSuites.forEach((sName) => {
+      const sObj = state.config.suites[sName];
+      const count = typeof sObj === "object" ? (sObj.task_count || 0) : 0;
+      totalTasksPerModel += count;
+    });
+  }
+
+  const grandTotalProblems = totalTasksPerModel * modelCount;
+  scopeTextEl.textContent = `Selected: ${modelCount} Model(s) · ${suiteCount} Suite(s) · ${grandTotalProblems} Problems Total`;
+}
+
 function updateModelSelectCount(allModels, selectedSet) {
   const countEl = document.getElementById("model-select-count");
   if (countEl) {
     countEl.textContent = `Selected: ${selectedSet.size} of ${allModels.length}`;
   }
+  updateRunScopeBar();
 }
 
 function formatBytesGB(bytes) {
@@ -202,8 +228,8 @@ function buildBadgesFromCatalog(entry) {
   const sizeStr = formatBytesGB(entry.size_bytes);
   if (sizeStr) badges.push({ text: sizeStr, cls: "quant" });
   if (entry.context_length) badges.push({ text: `${entry.context_length.toLocaleString()} ctx`, cls: "quant" });
-  if (entry.vision) badges.push({ text: "Vision", cls: "quant" });
-  if (entry.tool_use) badges.push({ text: "Tool Use", cls: "quant" });
+  if (entry.vision) badges.push({ text: "Vision", cls: "capability" });
+  if (entry.tool_use) badges.push({ text: "Tool Use", cls: "capability" });
   if (entry.type === "embedding") badges.push({ text: "Embedding (Non-Chat)", cls: "warn" });
   return badges;
 }
@@ -348,6 +374,7 @@ function renderSuiteGrid(container, suitesConfig, selectedSet) {
       if (cb.checked) selectedSet.add(suiteName);
       else selectedSet.delete(suiteName);
       card.classList.toggle("checked", cb.checked);
+      updateRunScopeBar();
     });
     card.appendChild(cb);
 
@@ -419,6 +446,7 @@ async function loadConfig() {
     state.selectedSuites
   );
   await loadFrontierJudgeCard();
+  updateRunScopeBar();
 }
 
 async function loadFrontierJudgeCard() {
@@ -916,25 +944,51 @@ document.getElementById("confirm-continue").addEventListener("click", async () =
 });
 
 // ---------- Live Hardware Monitor ----------
+// minSpan is the smallest y-range a chart will zoom into, in that metric's own
+// unit -- it stops an idle metric's jitter from being magnified to full height.
 const LIVE_METRICS = [
   { key: "cpu_percent", label: "CPU", unit: "%", fixedMax: 100 },
-  { key: "ram_used_gb", label: "RAM", unit: "GB", totalKey: "ram_total_gb" },
+  { key: "ram_used_gb", label: "RAM", unit: "GB", totalKey: "ram_total_gb", minSpan: 0.5 },
   { key: "gpu_util_percent", label: "GPU", unit: "%", fixedMax: 100 },
-  { key: "gpu_mem_used_gb", label: "GPU Memory", unit: "GB" },
-  { key: "disk_read_mb_s", label: "Disk Read", unit: "MB/s" },
-  { key: "disk_write_mb_s", label: "Disk Write", unit: "MB/s" },
+  { key: "gpu_mem_used_gb", label: "GPU Memory", unit: "GB", minSpan: 0.5 },
+  { key: "disk_read_mb_s", label: "Disk Read", unit: "MB/s", minSpan: 1 },
+  { key: "disk_write_mb_s", label: "Disk Write", unit: "MB/s", minSpan: 1 },
 ];
 
-function buildSparklinePath(values, width, height, yMax) {
+function buildSparklinePath(values, width, height, yMin, yMax) {
   if (values.length < 2) return "";
+  const span = yMax - yMin || 1;
   const stepX = width / (values.length - 1);
   return values
     .map((v, i) => {
       const x = i * stepX;
-      const y = height - (Math.min(v, yMax) / yMax) * height;
+      const clamped = Math.max(yMin, Math.min(v, yMax));
+      const y = height - ((clamped - yMin) / span) * height;
       return `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
     })
     .join(" ");
+}
+
+/**
+ * Pick a sparkline's y-range.
+ *
+ * Percentages keep a fixed 0-100 axis: their absolute level is the point.
+ * Everything else auto-fits the observed range, because a fixed axis makes
+ * real movement invisible -- RAM drawn on a 0-63.7 GB scale turns a 6 GB
+ * swing into a 9% wiggle that reads as a flat line. `minSpan` stops the
+ * opposite failure, where an idle metric's sampling noise gets stretched to
+ * full height and looks like dramatic activity.
+ */
+function sparklineRange(values, metric) {
+  if (metric.fixedMax != null) return { yMin: 0, yMax: metric.fixedMax };
+  const lo = Math.min(...values);
+  const hi = Math.max(...values);
+  const minSpan = metric.minSpan ?? 0;
+  let span = Math.max(hi - lo, minSpan);
+  if (span <= 0) span = Math.max(Math.abs(hi) * 0.1, 1);
+  const pad = span * 0.15;
+  const mid = (hi + lo) / 2;
+  return { yMin: Math.max(0, mid - span / 2 - pad), yMax: mid + span / 2 + pad };
 }
 
 function renderLiveMonitor(samples) {
@@ -953,7 +1007,7 @@ function renderLiveMonitor(samples) {
     const values = samples.map((s) => s[metric.key]).filter((v) => v != null);
     if (values.length === 0) return;
     const current = values[values.length - 1];
-    const yMax = metric.fixedMax ?? Math.max(...values, 0.001) * 1.15;
+    const { yMin, yMax } = sparklineRange(values, metric);
 
     const tile = document.createElement("div");
     tile.className = "live-monitor-tile";
@@ -978,10 +1032,20 @@ function renderLiveMonitor(samples) {
     svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
     svg.setAttribute("class", "live-monitor-svg");
     const path = document.createElementNS(svgNs, "path");
-    path.setAttribute("d", buildSparklinePath(values, width, height, total ?? yMax));
+    path.setAttribute("d", buildSparklinePath(values, width, height, yMin, yMax));
     path.setAttribute("class", "live-monitor-line");
     svg.appendChild(path);
     tile.appendChild(svg);
+
+    // An auto-fitted chart is unreadable without knowing what its floor and
+    // ceiling actually are -- state the window rather than implying 0-based.
+    if (metric.fixedMax == null) {
+      const scaleEl = document.createElement("div");
+      scaleEl.className = "live-monitor-scale";
+      scaleEl.textContent = `${fmtNum(yMin, 1)}–${fmtNum(yMax, 1)} ${metric.unit}`;
+      scaleEl.title = "Chart y-range, auto-fitted to the observed values so small changes stay visible.";
+      tile.appendChild(scaleEl);
+    }
 
     grid.appendChild(tile);
   });
@@ -1024,25 +1088,33 @@ function calculateApiSavings(runs) {
   };
 }
 
+state.historySearchQuery = "";
+state.historyProviderFilter = "";
+
 function renderHistoryStats(runs) {
   const statsEl = document.getElementById("history-stats");
   if (runs.length === 0) {
     statsEl.innerHTML = "";
     return;
   }
-  // Note: /api/runs intentionally returns lightweight summaries (model names
-  // only, no per-suite/per-problem data) so listing history stays cheap even
-  // with many saved runs. That means an illustrative-cost tile can't be
-  // computed honestly here without fetching every run's full detail -- it
-  // lives in the Compare view's export bar instead, where full run data is
-  // already loaded for the selected runs.
+
   const distinctModels = new Set(runs.flatMap((r) => r.models));
   const latest = runs[0];
+  const dateStr = formatRunDate(latest.started_at || latest.run_id);
 
   statsEl.innerHTML = `
-    <div class="stat-tile"><div class="value accent">${runs.length}</div><div class="label">Runs recorded</div></div>
-    <div class="stat-tile"><div class="value">${distinctModels.size}</div><div class="label">Models tested</div></div>
-    <div class="stat-tile"><div class="value" style="font-size:16px">${latest.started_at || latest.run_id}</div><div class="label">Latest run</div></div>
+    <div class="stat-tile">
+      <div class="value accent">📁 ${runs.length}</div>
+      <div class="label">Runs Recorded</div>
+    </div>
+    <div class="stat-tile">
+      <div class="value">🧠 ${distinctModels.size}</div>
+      <div class="label">Models Evaluated</div>
+    </div>
+    <div class="stat-tile">
+      <div class="value" style="font-size:15px; font-weight:600;">🕒 ${dateStr}</div>
+      <div class="label">Latest Evaluation</div>
+    </div>
   `;
 }
 
@@ -1050,32 +1122,128 @@ async function loadRunList() {
   const runs = await api("/api/runs");
   renderHistoryStats(runs);
   const container = document.getElementById("run-list");
+  if (!container) return;
+
+  // Dynamic Provider Filter Chips
+  const providerSet = new Set();
+  runs.forEach((r) => {
+    (r.models || []).forEach((m) => {
+      const parts = m.split("/");
+      const provider = parts.length > 1 ? parts[0] : m;
+      if (provider) providerSet.add(provider);
+    });
+  });
+
+  const chipsContainer = document.getElementById("history-provider-chips");
+  if (chipsContainer) {
+    chipsContainer.innerHTML = "";
+    const allProviders = ["", ...Array.from(providerSet)];
+    allProviders.forEach((prov) => {
+      const chip = document.createElement("label");
+      const isChecked = state.historyProviderFilter === prov;
+      chip.className = "chip" + (isChecked ? " checked" : "");
+      chip.textContent = prov ? prov : "All";
+      chip.style.fontSize = "11px";
+      chip.style.padding = "2px 8px";
+      chip.addEventListener("click", () => {
+        state.historyProviderFilter = prov;
+        loadRunList();
+      });
+      chipsContainer.appendChild(chip);
+    });
+  }
+
+  const searchInput = document.getElementById("history-search");
+  if (searchInput && !searchInput.dataset.wired) {
+    searchInput.dataset.wired = "true";
+    searchInput.addEventListener("input", (e) => {
+      state.historySearchQuery = e.target.value;
+      loadRunList();
+    });
+  }
+
+  const query = (state.historySearchQuery || "").toLowerCase().trim();
+  const providerQuery = (state.historyProviderFilter || "").toLowerCase().trim();
+
+  const filteredRuns = runs.filter((r) => {
+    const mName = (r.models || []).join(" ").toLowerCase();
+    const matchesSearch = !query || mName.includes(query) || r.run_id.toLowerCase().includes(query);
+    const matchesProvider = !providerQuery || mName.includes(providerQuery);
+    return matchesSearch && matchesProvider;
+  });
+
   container.innerHTML = "";
-  if (runs.length === 0) {
-    container.innerHTML = '<p class="empty-state">No runs yet -- start one from the New Run tab.</p>';
+  if (filteredRuns.length === 0) {
+    container.innerHTML = '<p class="empty-state">No history runs match filter.</p>';
     return;
   }
-  runs.forEach((run) => {
-    const item = document.createElement("div");
-    item.className = "run-list-item";
-    item.setAttribute("role", "button");
-    item.setAttribute("tabindex", "0");
+
+  filteredRuns.forEach((run) => {
+    const mName = run.models?.[0] || run.run_id;
     const gpu = Array.isArray(run.hardware?.gpu) ? run.hardware.gpu[0]?.name : run.hardware?.gpu;
+    const parsedMeta = parseModelMetadata(mName);
+
+    const card = document.createElement("div");
+    card.className = "history-card";
+    card.addEventListener("click", () => showRunDetail(run.run_id));
 
     const info = document.createElement("div");
-    const idLine = document.createElement("div");
-    idLine.className = "run-id";
-    idLine.textContent = run.run_id;
-    const metaLine = document.createElement("div");
-    metaLine.className = "meta";
-    metaLine.textContent = `${run.started_at || ""} · ${run.models.join(", ")} · ${gpu || "unknown GPU"}`;
-    info.appendChild(idLine);
-    info.appendChild(metaLine);
-    item.appendChild(info);
+    info.className = "history-card-info";
+
+    const titleRow = document.createElement("div");
+    titleRow.className = "history-card-title";
+    titleRow.textContent = run.run_id;
+
+    if (parsedMeta.family) {
+      const b = document.createElement("span");
+      b.className = "model-badge family";
+      b.textContent = parsedMeta.family;
+      titleRow.appendChild(b);
+    }
+    if (parsedMeta.size) {
+      const b = document.createElement("span");
+      b.className = "model-badge size";
+      b.textContent = parsedMeta.size;
+      titleRow.appendChild(b);
+    }
+    info.appendChild(titleRow);
+
+    const metaRow = document.createElement("div");
+    metaRow.className = "history-card-meta";
+    metaRow.textContent = `${formatRunDate(run.started_at || run.run_id)} · ${run.models.join(", ")} · ${gpu || "GPU"}`;
+    info.appendChild(metaRow);
+
+    card.appendChild(info);
+
+    // Actions
+    const actions = document.createElement("div");
+    actions.className = "history-card-actions";
+
+    const inspectBtn = document.createElement("button");
+    inspectBtn.type = "button";
+    inspectBtn.className = "secondary small";
+    inspectBtn.textContent = "📊 Inspect";
+    inspectBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      showRunDetail(run.run_id);
+    });
+    actions.appendChild(inspectBtn);
+
+    const compareBtn = document.createElement("button");
+    compareBtn.type = "button";
+    compareBtn.className = "secondary small";
+    compareBtn.textContent = "⚖️ Compare";
+    compareBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      state.selectedCompareRuns.add(run.run_id);
+      switchView("compare");
+    });
+    actions.appendChild(compareBtn);
 
     const deleteBtn = document.createElement("button");
+    deleteBtn.type = "button";
     deleteBtn.className = "small delete-run-btn";
-    deleteBtn.textContent = "Delete";
+    deleteBtn.textContent = "🗑️";
     deleteBtn.title = `Delete run ${run.run_id}`;
     deleteBtn.addEventListener("click", async (e) => {
       e.stopPropagation();
@@ -1100,16 +1268,10 @@ async function loadRunList() {
         alert("Failed to delete run: " + err.message);
       }
     });
-    item.appendChild(deleteBtn);
+    actions.appendChild(deleteBtn);
 
-    item.addEventListener("click", () => showRunDetail(run.run_id));
-    item.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" || e.key === " ") {
-        e.preventDefault();
-        showRunDetail(run.run_id);
-      }
-    });
-    container.appendChild(item);
+    card.appendChild(actions);
+    container.appendChild(card);
   });
 }
 
@@ -1180,20 +1342,25 @@ function renderRunDetail(data, suiteFilterVal, modelFilterVal) {
       const truncatedBadge = truncatedCount > 0
         ? `<span class="truncated-badge" title="${truncatedCount} of ${suite.total} failure(s) hit the max_tokens limit before finishing -- counted as failures, but may reflect too small a token budget rather than incorrect reasoning. Click the pill to inspect.">&#9888; ${truncatedCount} truncated</span>`
         : "";
+      const vramStr = vramTotal == null ? '<span class="muted" style="opacity:0.5;">—</span>' : `<span class="model-badge" style="background:rgba(139, 92, 246, 0.12); color:#c084fc; border:1px solid rgba(139, 92, 246, 0.3);">🟣 ${fmtNum(vramTotal / 1024, 2)} GB</span>`;
+      const vramDeltaStr = vram == null ? '<span class="muted" style="opacity:0.5;">—</span>' : `<span class="model-badge" style="background:rgba(0, 210, 255, 0.1); color:var(--accent); border:1px solid rgba(0, 210, 255, 0.3);">🔵 +${fmtNum(vram, 0)} MB</span>`;
+      const gpuStr = gpuUtil == null ? '<span class="muted" style="opacity:0.5;">—</span>' : `<span class="model-badge" style="background:rgba(245, 158, 11, 0.12); color:#f59e0b; border:1px solid rgba(245, 158, 11, 0.3);">⚡ ${fmtNum(gpuUtil, 0)}%</span>`;
+      const ramDeltaStr = resource.ram_delta_gb == null ? '<span class="muted" style="opacity:0.5;">—</span>' : `<span class="model-badge" style="background:rgba(16, 185, 129, 0.12); color:#34d399; border:1px solid rgba(16, 185, 129, 0.3);">🟢 +${fmtNum(resource.ram_delta_gb, 2)} GB</span>`;
+
       html += `<tr>
-        <td>${escapeHtml(modelName)}</td>
+        <td><strong>${escapeHtml(modelName)}</strong></td>
         <td>
           <span class="pill ${pillClass} clickable" data-run-id="${escapeHtml(data.run_id)}" data-model-name="${escapeHtml(modelName)}" data-suite-name="${escapeHtml(suiteName)}" title="Click to view detailed prompt/response/failure breakdown">
             <span class="icon">${icon}</span>${fmtPct(suite.pass_rate)} (${suite.pass_count}/${suite.total})
           </span>${truncatedBadge}
         </td>
-        <td>${fmtNum(suite.avg_latency_seconds)}s</td>
-        <td>${fmtNum(suite.avg_ttft_seconds)}s</td>
-        <td>${fmtNum(suite.avg_tokens_per_sec)}</td>
-        <td>${vramTotal == null ? '<span class="muted">not captured</span>' : fmtNum(vramTotal / 1024, 2) + " GB"}</td>
-        <td>${vram == null ? '<span class="muted">not captured</span>' : fmtNum(vram, 0) + " MB"}</td>
-        <td>${gpuUtil == null ? '<span class="muted">n/a</span>' : fmtNum(gpuUtil, 0) + "%"}</td>
-        <td>${fmtNum(resource.ram_delta_gb, 2)} GB</td>
+        <td><span class="model-badge" style="background:var(--surface);">🕒 ${fmtNum(suite.avg_latency_seconds)}s</span></td>
+        <td><span class="model-badge" style="background:var(--surface);">⏱️ ${fmtNum(suite.avg_ttft_seconds)}s</span></td>
+        <td><span class="model-badge" style="background:rgba(59, 130, 246, 0.12); color:#60a5fa; border:1px solid rgba(59, 130, 246, 0.3);">⚡ ${fmtNum(suite.avg_tokens_per_sec, 1)} tok/s</span></td>
+        <td>${vramStr}</td>
+        <td>${vramDeltaStr}</td>
+        <td>${gpuStr}</td>
+        <td>${ramDeltaStr}</td>
       </tr>`;
     });
     html += "</table>";
@@ -1367,22 +1534,113 @@ async function populatePlaygroundModels() {
   try {
     const detected = await api("/api/models/detect");
     if (detected.models?.length) models = detected.models;
-  } catch (e) {
-  }
+  } catch (e) {}
   select.innerHTML = models
     .map((m) => `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`)
     .join("");
 }
 
+// Slider Value Displays
+const pgTempInput = document.getElementById("pg-temperature");
+if (pgTempInput) {
+  pgTempInput.addEventListener("input", (e) => {
+    const el = document.getElementById("pg-temp-val");
+    if (el) el.textContent = e.target.value;
+  });
+}
+const pgTokensInput = document.getElementById("pg-max-tokens");
+if (pgTokensInput) {
+  pgTokensInput.addEventListener("input", (e) => {
+    const el = document.getElementById("pg-tokens-val");
+    if (el) el.textContent = Number(e.target.value).toLocaleString();
+  });
+}
+
+document.querySelectorAll("#pg-token-presets button[data-tok]").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const val = parseInt(btn.dataset.tok, 10);
+    const slider = document.getElementById("pg-max-tokens");
+    const valDisplay = document.getElementById("pg-tokens-val");
+    if (slider) slider.value = val;
+    if (valDisplay) valDisplay.textContent = val.toLocaleString();
+  });
+});
+
+// Preset Prompts
+const PG_PRESETS = {
+  json: {
+    system: "You are a structured data extractor. Return JSON only.",
+    prompt: "Extract the name, role, and skills from this text: 'Alex Rivers is a Lead AI Architect specializing in Rust, PyTorch, and distributed systems.'",
+    schema: JSON.stringify({
+      type: "object",
+      properties: {
+        name: { type: "string" },
+        role: { type: "string" },
+        skills: { type: "array", items: { type: "string" } },
+      },
+      required: ["name", "role", "skills"],
+    }, null, 2),
+  },
+  code: {
+    system: "You are an expert Python engineer. Provide clean, well-tested Python code.",
+    prompt: "Write an efficient Python function `binary_search(arr, target)` with docstrings and 3 unit tests.",
+    schema: "",
+  },
+  logic: {
+    system: "You are a precise mathematical reasoning engine. Think step by step.",
+    prompt: "A train leaves Station A at 60 mph. 30 minutes later, a express train leaves Station A at 90 mph in the same direction. How many miles from Station A will the express train overtake the first train?",
+    schema: "",
+  },
+  ifeval: {
+    system: "",
+    prompt: "Write a short announcement for a tech meetup.\nConstraint 1: Must contain exactly 3 paragraphs.\nConstraint 2: Do NOT use the letter 'e' anywhere in the response.",
+    schema: "",
+  },
+};
+
+const pgPresetContainer = document.getElementById("pg-presets");
+if (pgPresetContainer) {
+  pgPresetContainer.querySelectorAll("button[data-pg-preset]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const presetKey = btn.dataset.pgPreset;
+      const preset = PG_PRESETS[presetKey];
+      if (preset) {
+        document.getElementById("pg-system-prompt").value = preset.system || "";
+        document.getElementById("pg-prompt").value = preset.prompt || "";
+        document.getElementById("pg-schema").value = preset.schema || "";
+      }
+    });
+  });
+}
+
+const pgCopyBtn = document.getElementById("pg-copy-btn");
+if (pgCopyBtn) {
+  pgCopyBtn.addEventListener("click", () => {
+    const text = document.getElementById("pg-content").textContent;
+    navigator.clipboard.writeText(text).then(() => {
+      alert("Response copied to clipboard!");
+    }).catch((e) => alert("Failed to copy: " + e.message));
+  });
+}
+
 document.getElementById("pg-run").addEventListener("click", async () => {
   const status = document.getElementById("pg-status");
-  const resultBox = document.getElementById("pg-result");
+  const emptyState = document.getElementById("pg-empty-state");
+  const resultContainer = document.getElementById("pg-result-container");
   status.textContent = "running...";
-  resultBox.style.display = "none";
 
   const model = document.getElementById("pg-model").value;
-  const prompt = document.getElementById("pg-prompt").value;
+  const systemPrompt = document.getElementById("pg-system-prompt").value.trim();
+  const prompt = document.getElementById("pg-prompt").value.trim();
+  const temperature = parseFloat(document.getElementById("pg-temperature").value);
+  const maxTokens = parseInt(document.getElementById("pg-max-tokens").value, 10);
   const schemaText = document.getElementById("pg-schema").value.trim();
+
+  if (!prompt) {
+    status.textContent = "please enter a prompt";
+    return;
+  }
+
   let schema = null;
   if (schemaText) {
     try {
@@ -1397,21 +1655,64 @@ document.getElementById("pg-run").addEventListener("click", async () => {
     const data = await api("/api/custom", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model, prompt, schema }),
+      body: JSON.stringify({
+        model,
+        prompt,
+        system_prompt: systemPrompt || undefined,
+        temperature,
+        max_tokens: maxTokens,
+        schema,
+      }),
     });
     status.textContent = data.success ? "done" : "call failed";
-    document.getElementById("pg-content").textContent = data.success
-      ? data.content || "(empty response)"
-      : data.error;
-    let stats = `latency: ${fmtNum(data.latency_seconds)}s | ttft: ${fmtNum(data.ttft_seconds)}s | tok/s: ${fmtNum(data.tokens_per_sec)}`;
-    if (data.truncated) stats += " | TRUNCATED (raise max_tokens)";
-    if ("schema_valid" in data) {
-      stats += data.schema_valid
-        ? " | schema: valid"
-        : ` | schema: invalid (${data.schema_error})`;
+
+    if (emptyState) emptyState.style.display = "none";
+    if (resultContainer) resultContainer.style.display = "flex";
+
+    // Handle Thinking Reasoning Chain (<think> tags or reasoning_content)
+    let mainContent = data.content || "";
+    let thinkContent = data.reasoning_content || "";
+
+    if (!thinkContent && mainContent.includes("<think>")) {
+      const parts = mainContent.split("</think>");
+      if (parts.length > 1) {
+        thinkContent = parts[0].replace("<think>", "").trim();
+        mainContent = parts.slice(1).join("</think>").trim();
+      }
     }
-    document.getElementById("pg-stats").textContent = stats;
-    resultBox.style.display = "block";
+
+    const thinkDetails = document.getElementById("pg-think-details");
+    const thinkEl = document.getElementById("pg-think-content");
+    if (thinkContent) {
+      thinkEl.textContent = thinkContent;
+      thinkDetails.style.display = "block";
+    } else {
+      thinkDetails.style.display = "none";
+    }
+
+    document.getElementById("pg-content").textContent = data.success
+      ? mainContent || "(empty response)"
+      : data.error;
+
+    // Badges
+    const statsBadges = document.getElementById("pg-stats-badges");
+    statsBadges.innerHTML = `
+      <span class="model-badge" style="background:var(--surface);">⏱️ ${fmtNum(data.latency_seconds)}s Latency</span>
+      <span class="model-badge" style="background:var(--surface);">⚡ ${fmtNum(data.tokens_per_sec)} tok/s</span>
+      <span class="model-badge" style="background:var(--surface);">⏱️ ${fmtNum(data.ttft_seconds)}s TTFT</span>
+      ${data.truncated ? '<span class="model-badge" style="background:var(--critical-soft); color:var(--critical);">⚠️ Truncated</span>' : ""}
+    `;
+
+    const schemaBadge = document.getElementById("pg-schema-badge");
+    if ("schema_valid" in data) {
+      if (data.schema_valid) {
+        schemaBadge.innerHTML = '<span class="delta-badge better">✓ SCHEMA VALID</span>';
+      } else {
+        schemaBadge.innerHTML = `<span class="delta-badge worse" title="${escapeHtml(data.schema_error || "")}">✗ SCHEMA INVALID</span>`;
+      }
+    } else {
+      schemaBadge.innerHTML = "";
+    }
   } catch (e) {
     status.textContent = "error: " + e.message;
   }
@@ -1711,7 +2012,7 @@ function roundedTopBarPath(x, y, w, h, r) {
     `Q${x + w},${y} ${x + w},${y + r} L${x + w},${y + h} Z`;
 }
 
-function buildBarChart({ title, categories, series, getValue, formatValue, yMax, yTicks }) {
+function buildBarChart({ title, categories, series, allSeries, getValue, formatValue, yMax, yTicks }) {
   const wrap = document.createElement("div");
   wrap.className = "card";
 
@@ -1719,19 +2020,35 @@ function buildBarChart({ title, categories, series, getValue, formatValue, yMax,
   heading.textContent = title;
   wrap.appendChild(heading);
 
-  if (series.length > 1) {
+  const displaySeries = allSeries || series;
+  if (displaySeries.length > 1) {
     const legend = document.createElement("div");
     legend.className = "chart-legend";
-    series.forEach((s, i) => {
+    displaySeries.forEach((s, i) => {
+      const isHidden = state.hiddenSeries.has(s.key);
       const item = document.createElement("div");
-      item.className = "item";
+      item.className = "item" + (isHidden ? " dimmed" : "");
+      item.title = isHidden ? `Click to show ${s.label}` : `Click to hide ${s.label}`;
+
       const swatch = document.createElement("span");
       swatch.className = "swatch";
       swatch.style.background = seriesColor(i);
       item.appendChild(swatch);
+
       const label = document.createElement("span");
       label.textContent = s.label;
       item.appendChild(label);
+
+      item.onclick = (e) => {
+        e.stopPropagation();
+        if (state.hiddenSeries.has(s.key)) {
+          state.hiddenSeries.delete(s.key);
+        } else {
+          state.hiddenSeries.add(s.key);
+        }
+        renderCompare();
+      };
+
       legend.appendChild(item);
     });
     wrap.appendChild(legend);
@@ -2481,6 +2798,9 @@ function buildRadarChart(series, categories, getSuite) {
   return wrap;
 }
 
+state.compareSubTab = state.compareSubTab || "overview";
+state.hiddenSeries = state.hiddenSeries || new Set();
+
 async function renderCompare() {
   const output = document.getElementById("compare-output");
   const runIds = Array.from(state.selectedCompareRuns);
@@ -2497,12 +2817,14 @@ async function renderCompare() {
     runs.push(compareRunCache.get(runId));
   }
 
-  const series = [];
+  const allSeries = [];
   runs.forEach((run) => {
     Object.keys(run.models).forEach((modelName) => {
-      series.push({ key: `${run.run_id}::${modelName}`, label: `${modelName} (${run.run_id})`, runId: run.run_id, modelName });
+      allSeries.push({ key: `${run.run_id}::${modelName}`, label: `${modelName} (${run.run_id})`, runId: run.run_id, modelName });
     });
   });
+
+  const series = allSeries.filter((s) => !state.hiddenSeries.has(s.key));
 
   const suiteSet = new Set();
   runs.forEach((run) => Object.values(run.models).forEach((m) => Object.keys(m.suites).forEach((s) => {
@@ -2517,19 +2839,40 @@ async function renderCompare() {
 
   output.innerHTML = "";
 
+  const subtabsNav = document.createElement("div");
+  subtabsNav.className = "compare-subtabs";
+
+  const subTabOptions = [
+    { id: "overview", label: "📊 Overview & Verdict" },
+    { id: "charts", label: "📈 Detailed Suite Charts" },
+    { id: "data", label: "📋 Data & Hardware Table" },
+  ];
+
+  subTabOptions.forEach((opt) => {
+    const btn = document.createElement("button");
+    btn.className = "compare-tab-btn" + (state.compareSubTab === opt.id ? " active" : "");
+    btn.textContent = opt.label;
+    btn.onclick = () => {
+      state.compareSubTab = opt.id;
+      renderCompare();
+    };
+    subtabsNav.appendChild(btn);
+  });
+  output.appendChild(subtabsNav);
+
   const exportBar = document.createElement("div");
   exportBar.className = "export-bar";
 
   const exportMdBtn = document.createElement("button");
   exportMdBtn.className = "secondary";
   exportMdBtn.textContent = "📋 Copy Markdown Report";
-  exportMdBtn.onclick = () => exportCompareMarkdown(series, categories, runs);
+  exportMdBtn.onclick = () => exportCompareMarkdown(allSeries, categories, runs);
   exportBar.appendChild(exportMdBtn);
 
   const exportCsvBtn = document.createElement("button");
   exportCsvBtn.className = "secondary";
   exportCsvBtn.textContent = "📥 Download CSV";
-  exportCsvBtn.onclick = () => exportCompareCSV(series, categories, runs);
+  exportCsvBtn.onclick = () => exportCompareCSV(allSeries, categories, runs);
   exportBar.appendChild(exportCsvBtn);
 
   const savings = calculateApiSavings(runs);
@@ -2550,88 +2893,96 @@ async function renderCompare() {
 
   output.appendChild(exportBar);
 
-  // 2-Fact Matchup Verdict Banner
-  if (series.length > 0) {
-    let topAccItem = null;
-    let topSpeedItem = null;
+  // 3. Render Active Sub-tab Content
+  const activeSeries = series.length ? series : allSeries;
 
-    series.forEach((s) => {
-      let passSum = 0, speedSum = 0, count = 0;
-      categories.forEach((cat) => {
-        const suite = getSuite(s, cat);
-        if (suite) {
-          passSum += suite.pass_rate || 0;
-          speedSum += suite.avg_tokens_per_sec || 0;
-          count++;
-        }
+  if (state.compareSubTab === "overview") {
+    // 2-Fact Matchup Verdict Banner
+    if (allSeries.length > 0) {
+      let topAccItem = null;
+      let topSpeedItem = null;
+
+      allSeries.forEach((s) => {
+        let passSum = 0, speedSum = 0, count = 0;
+        categories.forEach((cat) => {
+          const suite = getSuite(s, cat);
+          if (suite) {
+            passSum += suite.pass_rate || 0;
+            speedSum += suite.avg_tokens_per_sec || 0;
+            count++;
+          }
+        });
+        const meanPass = count ? passSum / count : 0;
+        const meanSpeed = count ? speedSum / count : 0;
+        const itemData = { modelName: s.modelName, meanPass, meanSpeed, runId: s.runId };
+
+        if (!topAccItem || itemData.meanPass > topAccItem.meanPass) topAccItem = itemData;
+        if (!topSpeedItem || itemData.meanSpeed > topSpeedItem.meanSpeed) topSpeedItem = itemData;
       });
-      const meanPass = count ? passSum / count : 0;
-      const meanSpeed = count ? speedSum / count : 0;
-      const itemData = { modelName: s.modelName, meanPass, meanSpeed, runId: s.runId };
 
-      if (!topAccItem || itemData.meanPass > topAccItem.meanPass) topAccItem = itemData;
-      if (!topSpeedItem || itemData.meanSpeed > topSpeedItem.meanSpeed) topSpeedItem = itemData;
-    });
-
-    let vsBaselineStr = "";
-    if (state.baselineRunId && compareRunCache.has(state.baselineRunId)) {
-      const baseRun = compareRunCache.get(state.baselineRunId);
-      const baseModelObj = Object.values(baseRun.models || {})[0];
-      if (baseModelObj && baseModelObj.suites) {
-        const sVals = Object.values(baseModelObj.suites);
-        const baseMean = sVals.reduce((acc, s) => acc + (s.pass_rate || 0), 0) / (sVals.length || 1);
-        const diffPct = Math.round((topAccItem.meanPass - baseMean) * 100);
-        vsBaselineStr = diffPct >= 0 ? ` (+${diffPct}% vs baseline)` : ` (${diffPct}% vs baseline)`;
+      let vsBaselineStr = "";
+      if (state.baselineRunId && compareRunCache.has(state.baselineRunId)) {
+        const baseRun = compareRunCache.get(state.baselineRunId);
+        const baseModelObj = Object.values(baseRun.models || {})[0];
+        if (baseModelObj && baseModelObj.suites) {
+          const sVals = Object.values(baseModelObj.suites);
+          const baseMean = sVals.reduce((acc, s) => acc + (s.pass_rate || 0), 0) / (sVals.length || 1);
+          const diffPct = Math.round((topAccItem.meanPass - baseMean) * 100);
+          vsBaselineStr = diffPct >= 0 ? ` (+${diffPct}% vs baseline)` : ` (${diffPct}% vs baseline)`;
+        }
       }
+
+      const verdictBanner = document.createElement("div");
+      verdictBanner.className = "verdict-banner";
+      verdictBanner.textContent = `🏆 Highest mean pass rate: ${topAccItem.modelName} — ${Math.round(topAccItem.meanPass * 100)}%${vsBaselineStr}. Fastest: ${topSpeedItem.modelName} — ${fmtNum(topSpeedItem.meanSpeed, 0)} tok/s.`;
+      output.appendChild(verdictBanner);
     }
 
-    const verdictBanner = document.createElement("div");
-    verdictBanner.className = "verdict-banner";
-    verdictBanner.textContent = `🏆 Highest mean pass rate: ${topAccItem.modelName} — ${Math.round(topAccItem.meanPass * 100)}%${vsBaselineStr}. Fastest: ${topSpeedItem.modelName} — ${fmtNum(topSpeedItem.meanSpeed, 0)} tok/s.`;
-    output.appendChild(verdictBanner);
+    output.appendChild(buildParetoChart(activeSeries, categories, getSuite, allSeries));
+    output.appendChild(buildRadarChart(activeSeries, categories, getSuite, allSeries));
+  } else if (state.compareSubTab === "charts") {
+    output.appendChild(
+      buildBarChart({
+        title: "Pass rate by suite",
+        categories,
+        series: activeSeries,
+        allSeries,
+        getValue: (s, cat) => {
+          const suite = getSuite(s, cat);
+          return suite ? Math.round(suite.pass_rate * 100) : null;
+        },
+        formatValue: (v) => `${v}%`,
+        yMax: 100,
+        yTicks: [0, 25, 50, 75, 100],
+      })
+    );
+
+    const maxTokPerSec = Math.max(
+      1,
+      ...activeSeries.flatMap((s) => categories.map((cat) => getSuite(s, cat)?.avg_tokens_per_sec || 0))
+    );
+    const tokYMax = Math.ceil(maxTokPerSec / 10) * 10 || 10;
+    output.appendChild(
+      buildBarChart({
+        title: "Tokens/sec by suite",
+        categories,
+        series: activeSeries,
+        allSeries,
+        getValue: (s, cat) => getSuite(s, cat)?.avg_tokens_per_sec ?? null,
+        formatValue: (v) => fmtNum(v, 0),
+        yMax: tokYMax,
+        yTicks: [0, tokYMax / 2, tokYMax],
+      })
+    );
+
+    output.appendChild(buildTTFTChart(activeSeries, categories, getSuite, allSeries));
+    output.appendChild(buildPerSuiteBreakdown(activeSeries, categories, getSuite));
+  } else if (state.compareSubTab === "data") {
+    output.appendChild(buildModelDetailsTable(allSeries, runs));
+    output.appendChild(buildFullComparisonTable(allSeries, categories, getSuite, runs));
   }
 
-  output.appendChild(buildModelDetailsTable(series, runs));
-  output.appendChild(buildParetoChart(series, categories, getSuite));
-  output.appendChild(buildRadarChart(series, categories, getSuite));
-
-  output.appendChild(
-    buildBarChart({
-      title: "Pass rate by suite",
-      categories,
-      series,
-      getValue: (s, cat) => {
-        const suite = getSuite(s, cat);
-        return suite ? Math.round(suite.pass_rate * 100) : null;
-      },
-      formatValue: (v) => `${v}%`,
-      yMax: 100,
-      yTicks: [0, 25, 50, 75, 100],
-    })
-  );
-
-  const maxTokPerSec = Math.max(
-    1,
-    ...series.flatMap((s) => categories.map((cat) => getSuite(s, cat)?.avg_tokens_per_sec || 0))
-  );
-  const tokYMax = Math.ceil(maxTokPerSec / 10) * 10 || 10;
-  output.appendChild(
-    buildBarChart({
-      title: "Tokens/sec by suite",
-      categories,
-      series,
-      getValue: (s, cat) => getSuite(s, cat)?.avg_tokens_per_sec ?? null,
-      formatValue: (v) => fmtNum(v, 0),
-      yMax: tokYMax,
-      yTicks: [0, tokYMax / 2, tokYMax],
-    })
-  );
-
-  output.appendChild(buildTTFTChart(series, categories, getSuite));
-  output.appendChild(buildPerSuiteBreakdown(series, categories, getSuite));
-  output.appendChild(buildFullComparisonTable(series, categories, getSuite, runs));
-
-  const frontierSection = buildFrontierJudgeSection(series, runs, getSuite);
+  const frontierSection = buildFrontierJudgeSection(activeSeries, runs, getSuite);
   if (frontierSection) output.appendChild(frontierSection);
 }
 
@@ -2951,6 +3302,17 @@ function renderKeysList(keys) {
     input.className = "key-row-input";
     row.appendChild(input);
 
+    const toggleBtn = document.createElement("button");
+    toggleBtn.type = "button";
+    toggleBtn.className = "secondary small";
+    toggleBtn.textContent = "👁️";
+    toggleBtn.title = "Toggle visibility";
+    toggleBtn.addEventListener("click", () => {
+      input.type = input.type === "password" ? "text" : "password";
+      toggleBtn.textContent = input.type === "password" ? "👁️" : "🙈";
+    });
+    row.appendChild(toggleBtn);
+
     const saveBtn = document.createElement("button");
     saveBtn.className = "secondary small";
     saveBtn.textContent = "Save";
@@ -2990,12 +3352,35 @@ function renderKeysList(keys) {
 document.querySelectorAll("[data-preset-url]").forEach((btn) => {
   btn.addEventListener("click", () => {
     document.getElementById("settings-base-url").value = btn.dataset.presetUrl;
+    if (btn.dataset.presetUnload !== undefined) {
+      document.getElementById("settings-unload-cmd").value = btn.dataset.presetUnload;
+    }
   });
 });
 
+const themeSelect = document.getElementById("settings-theme-select");
+if (themeSelect) {
+  const savedTheme = localStorage.getItem("localbench-theme") || "dark";
+  themeSelect.value = savedTheme;
+  document.documentElement.setAttribute("data-theme", savedTheme);
+  themeSelect.addEventListener("change", (e) => {
+    const val = e.target.value;
+    localStorage.setItem("localbench-theme", val);
+    document.documentElement.setAttribute("data-theme", val);
+  });
+}
+
+const defaultViewSelect = document.getElementById("settings-default-view");
+if (defaultViewSelect) {
+  defaultViewSelect.value = state.compareViewMode || "dedup";
+  defaultViewSelect.addEventListener("change", (e) => {
+    state.compareViewMode = e.target.value;
+  });
+}
+
 document.getElementById("settings-runtime-save")?.addEventListener("click", async () => {
   const statusEl = document.getElementById("settings-runtime-status");
-  statusEl.textContent = "Saving...";
+  statusEl.innerHTML = '<span class="muted">Saving...</span>';
   try {
     await api("/api/settings/runtime", {
       method: "POST",
@@ -3006,26 +3391,26 @@ document.getElementById("settings-runtime-save")?.addEventListener("click", asyn
         unload_all_cmd: document.getElementById("settings-unload-cmd").value,
       }),
     });
-    statusEl.textContent = "Saved.";
+    statusEl.innerHTML = '<span class="delta-badge better">✓ Saved</span>';
   } catch (e) {
-    statusEl.textContent = `Error: ${apiErrorDetail(e)}`;
+    statusEl.innerHTML = `<span class="delta-badge worse">Error: ${apiErrorDetail(e)}</span>`;
   }
 });
 
 document.getElementById("settings-runtime-test")?.addEventListener("click", async () => {
   const statusEl = document.getElementById("settings-runtime-status");
-  statusEl.textContent = "Testing...";
+  statusEl.innerHTML = '<span class="muted">Testing connection...</span>';
   try {
     const res = await api("/api/models/detect");
-    statusEl.textContent = `Reachable -- ${res.models.length} model(s) visible.`;
+    statusEl.innerHTML = `<span class="delta-badge better">🟢 ONLINE (${res.models.length} models visible)</span>`;
   } catch (e) {
-    statusEl.textContent = `Unreachable: ${apiErrorDetail(e)}`;
+    statusEl.innerHTML = `<span class="delta-badge worse">🔴 OFFLINE (${apiErrorDetail(e)})</span>`;
   }
 });
 
 document.getElementById("settings-judge-save")?.addEventListener("click", async () => {
   const statusEl = document.getElementById("settings-judge-status");
-  statusEl.textContent = "Saving...";
+  statusEl.innerHTML = '<span class="muted">Saving...</span>';
   try {
     await api("/api/settings/judge", {
       method: "POST",
@@ -3038,9 +3423,9 @@ document.getElementById("settings-judge-save")?.addEventListener("click", async 
         pass_threshold: Number(document.getElementById("settings-judge-pass-threshold").value),
       }),
     });
-    statusEl.textContent = "Saved.";
+    statusEl.innerHTML = '<span class="delta-badge better">✓ Saved</span>';
   } catch (e) {
-    statusEl.textContent = `Error: ${apiErrorDetail(e)}`;
+    statusEl.innerHTML = `<span class="delta-badge worse">Error: ${apiErrorDetail(e)}</span>`;
   }
 });
 

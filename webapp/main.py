@@ -462,6 +462,10 @@ def run_custom(payload: dict) -> dict:
     config = load_config()
     model = payload.get("model")
     prompt = payload.get("prompt")
+    system_prompt = payload.get("system_prompt")
+    temperature = payload.get("temperature")
+    max_tokens = payload.get("max_tokens", 1536)
+
     if not model or not prompt:
         raise HTTPException(400, "both 'model' and 'prompt' are required")
 
@@ -470,9 +474,19 @@ def run_custom(payload: dict) -> dict:
         model=model,
         api_key=config["runtime"].get("api_key", "not-needed"),
         timeout_seconds=payload.get("timeout_seconds", 120),
-        max_tokens=payload.get("max_tokens", 1024),
+        max_tokens=max_tokens,
     )
-    chat = ctx.call([{"role": "user", "content": prompt}])
+
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": prompt})
+
+    call_kwargs = {}
+    if temperature is not None:
+        call_kwargs["temperature"] = float(temperature)
+
+    chat = ctx.call(messages, **call_kwargs)
 
     result = {
         "success": chat.success,

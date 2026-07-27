@@ -8,8 +8,13 @@
 <body>
 <div class="app">
   <header class="top">
-    <h1>TaskMatch AI</h1>
-    <span class="sub">Task-driven evaluation for local LLMs.</span>
+    <div class="row" style="align-items: center; gap: 12px;">
+      <img src="/static/logo.jpg" alt="TaskMatch AI Logo" style="width: 40px; height: 40px; border-radius: 9px; box-shadow: 0 0 12px rgba(0, 210, 255, 0.4); object-fit: cover;">
+      <div>
+        <h1 style="margin: 0; font-size: 1.45rem; line-height: 1.1;">TaskMatch AI</h1>
+        <span class="sub" style="margin: 0; display: block; margin-top: 2px;">Test your local models on real tasks to find the exact fit for your needs.</span>
+      </div>
+    </div>
     <button class="theme-toggle" id="theme-toggle" aria-label="Toggle dark/light theme" title="Toggle theme"></button>
   </header>
 
@@ -82,6 +87,10 @@
     </div>
 
     <div class="card">
+      <div id="run-scope-bar" class="run-scope-bar" style="margin-bottom: 12px; display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px;" title="Execution speed depends on your GPU/VRAM offload speed.">
+        <span style="font-weight: 600; font-size: 13px;" id="run-scope-text">Selected: 0 Models · 0 Suites · 0 Problems Total</span>
+        <span class="muted" style="font-size: 11.5px;">ⓘ Task Count Scope</span>
+      </div>
       <button class="primary" id="start-run">Start Run</button>
       <span class="muted" id="run-hint">Models are benchmarked one at a time -- this can take a while.</span>
 
@@ -101,16 +110,24 @@
   <!-- HISTORY -->
   <section id="view-history" class="view">
     <div class="stat-tiles" id="history-stats"></div>
+
     <div class="card">
-      <h2>Past Runs</h2>
-      <div id="run-list"></div>
+      <div class="row" style="justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 14px;">
+        <h2 style="margin:0;">Past Runs History</h2>
+        <div class="row" style="gap: 8px; align-items: center; flex-wrap: wrap;">
+          <input type="text" id="history-search" placeholder="Search runs or models..." style="width: 220px; padding: 5px 9px; font-size: 12.5px;">
+          <div id="history-provider-chips" class="row" style="gap: 4px;"></div>
+        </div>
+      </div>
+      <div id="run-list" class="history-grid" style="display:flex; flex-direction:column; gap:10px;"></div>
     </div>
-    <div class="card" id="run-detail-card" style="display:none;">
-      <div class="row" style="justify-content: space-between;">
-        <h2 id="run-detail-title">Run</h2>
+
+    <div class="card" id="run-detail-card" style="display:none; margin-top: 16px;">
+      <div class="row" style="justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 12px;">
+        <h2 id="run-detail-title" style="margin:0;">Run Details</h2>
         <div class="dl-links" id="run-detail-links"></div>
       </div>
-      <div class="filters">
+      <div class="filters" style="margin-bottom: 14px;">
         <select id="suite-filter"><option value="">All suites</option></select>
         <select id="model-filter"><option value="">All models</option></select>
       </div>
@@ -150,87 +167,205 @@
   <!-- PLAYGROUND -->
   <section id="view-playground" class="view">
     <div class="card">
-      <h2>Custom Job</h2>
-      <p class="muted">Test a local model against your own prompt or workflow -- not part of any saved benchmark run.</p>
-      <label class="field">Model</label>
-      <select id="pg-model"></select>
-      <label class="field" style="margin-top:10px;">Prompt</label>
-      <textarea id="pg-prompt" rows="6" placeholder="Paste your own prompt / task here..."></textarea>
-      <label class="field" style="margin-top:10px;">Optional JSON Schema (validates the response as JSON against it)</label>
-      <textarea id="pg-schema" rows="4" placeholder='{"type": "object", "properties": {...}}'></textarea>
-      <div class="row" style="margin-top:10px;">
-        <button class="primary" id="pg-run">Run</button>
-        <span class="muted" id="pg-status"></span>
+      <div class="row" style="justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 10px;">
+        <div>
+          <h2 style="margin:0;">TaskMatch Playground</h2>
+          <p class="muted" style="margin:4px 0 0 0;">Test a local model against your own prompt, workflow, or schema in real time.</p>
+        </div>
+        <div class="row" style="gap: 6px; flex-wrap: wrap;" id="pg-presets">
+          <button class="secondary small" data-pg-preset="json">⚙️ JSON Schema</button>
+          <button class="secondary small" data-pg-preset="code">🐍 Python Code</button>
+          <button class="secondary small" data-pg-preset="logic">🧠 Logic Puzzle</button>
+          <button class="secondary small" data-pg-preset="ifeval">📋 Constraints</button>
+        </div>
       </div>
-      <div id="pg-result" style="margin-top:14px; display:none;">
-        <h3>Response</h3>
-        <pre class="output" id="pg-content"></pre>
-        <h3>Stats</h3>
-        <div class="muted" id="pg-stats"></div>
+
+      <div class="pg-workspace">
+        <!-- LEFT PANE: Inputs & Parameters -->
+        <div class="pg-pane left">
+          <label class="field">Model</label>
+          <select id="pg-model"></select>
+
+          <label class="field" style="margin-top:12px;">System Prompt <span class="muted">(Optional)</span></label>
+          <textarea id="pg-system-prompt" rows="2" placeholder="e.g. You are a precise Python developer who outputs clean code."></textarea>
+
+          <label class="field" style="margin-top:12px;">User Prompt</label>
+          <textarea id="pg-prompt" rows="6" placeholder="Paste your own prompt or task here..."></textarea>
+
+          <div class="row" style="gap:14px; margin-top:12px; flex-wrap: wrap;">
+            <div style="flex:1; min-width: 120px;">
+              <label class="field">Temperature: <span id="pg-temp-val">0.2</span></label>
+              <input type="range" id="pg-temperature" min="0" max="1" step="0.1" value="0.2" style="width:100%;">
+            </div>
+            <div style="flex:1.2; min-width: 220px;">
+              <div class="row" style="justify-content: space-between; align-items: center; margin-bottom: 2px;">
+                <label class="field" style="margin:0;">Max Tokens: <span id="pg-tokens-val" style="font-weight:700; color:var(--accent);">4096</span></label>
+                <div id="pg-token-presets" class="row" style="gap: 3px;">
+                  <button type="button" class="chip" data-tok="4096" style="font-size:10px; padding:1px 5px;">4K</button>
+                  <button type="button" class="chip" data-tok="8192" style="font-size:10px; padding:1px 5px;">8K</button>
+                  <button type="button" class="chip" data-tok="16384" style="font-size:10px; padding:1px 5px;">16K</button>
+                  <button type="button" class="chip" data-tok="32768" style="font-size:10px; padding:1px 5px;">32K</button>
+                  <button type="button" class="chip" data-tok="96000" style="font-size:10px; padding:1px 5px;">96K</button>
+                  <button type="button" class="chip" data-tok="131072" style="font-size:10px; padding:1px 5px;">Max</button>
+                </div>
+              </div>
+              <input type="range" id="pg-max-tokens" min="256" max="131072" step="512" value="4096" style="width:100%;">
+            </div>
+          </div>
+
+          <label class="field" style="margin-top:12px;">Optional JSON Schema <span class="muted">(validates JSON output)</span></label>
+          <textarea id="pg-schema" rows="3" placeholder='{"type": "object", "properties": {"result": {"type": "string"}}}'></textarea>
+
+          <div class="row" style="margin-top:14px;">
+            <button class="primary" id="pg-run">Run Test</button>
+            <span class="muted" id="pg-status" style="margin-left: 8px;"></span>
+          </div>
+        </div>
+
+        <!-- RIGHT PANE: Live Output & Diagnostics -->
+        <div class="pg-pane right">
+          <div id="pg-empty-state" class="empty-state" style="padding: 60px 20px; text-align: center;">
+            <div style="font-size: 32px; margin-bottom: 8px;">🧪</div>
+            <div style="font-weight: 600; margin-bottom: 4px;">Ready to Test</div>
+            <div class="muted">Select a model, choose a prompt preset or enter your prompt, and click Run Test.</div>
+          </div>
+
+          <div id="pg-result-container" style="display:none; flex-direction: column;">
+            <div class="row" style="justify-content: space-between; align-items: center; margin-bottom: 8px; flex-wrap: wrap; gap: 8px;">
+              <div class="row" style="gap: 6px; flex-wrap: wrap;" id="pg-stats-badges"></div>
+              <div class="row" style="gap: 6px;">
+                <span id="pg-schema-badge"></span>
+                <button class="secondary small" id="pg-copy-btn">📋 Copy Response</button>
+              </div>
+            </div>
+
+            <!-- Thinking Reasoning Accordion -->
+            <details id="pg-think-details" style="display:none; margin-bottom: 10px; padding: 8px 12px;" class="card">
+              <summary style="cursor:pointer; font-weight:600; font-size:12px; color:var(--accent);">🧠 View Internal Reasoning Chain (&lt;think&gt; tokens)</summary>
+              <pre class="output" id="pg-think-content" style="margin-top:8px; font-size:11.5px; max-height: 180px; overflow-y: auto; background: rgba(0,0,0,0.2);"></pre>
+            </details>
+
+            <label class="field">Generated Output</label>
+            <pre class="output" id="pg-content" style="min-height: 240px; margin-top:4px; max-height: 480px; overflow-y: auto; white-space: pre-wrap; word-break: break-word;"></pre>
+          </div>
+        </div>
       </div>
     </div>
   </section>
 
   <!-- SETTINGS -->
   <section id="view-settings" class="view">
-    <div class="card">
-      <h2>Local Runtime</h2>
-      <p class="muted">Which OpenAI-compatible server localbench talks to. Changes are written to <code>config.yaml</code> and take effect on the next run.</p>
-      <div class="row" style="gap:8px; margin-bottom:10px;">
-        <button class="secondary small" data-preset-url="http://localhost:1234/v1">LM Studio</button>
-        <button class="secondary small" data-preset-url="http://localhost:11434/v1">Ollama</button>
-        <button class="secondary small" data-preset-url="http://localhost:8080/v1">llama.cpp</button>
-      </div>
-      <label class="field">Base URL</label>
-      <input type="text" id="settings-base-url" placeholder="http://localhost:1234/v1">
-      <label class="field" style="margin-top:10px;">Request timeout (seconds)</label>
-      <input type="number" id="settings-timeout" min="1">
-      <label class="field" style="margin-top:10px;">Unload-all command (run before switching to any model)</label>
-      <input type="text" id="settings-unload-cmd" placeholder="lms unload --all">
-      <div class="row" style="margin-top:12px; align-items:center; gap:10px;">
-        <button class="primary" id="settings-runtime-save">Save Runtime Settings</button>
-        <button class="secondary" id="settings-runtime-test">Test Connection</button>
-        <span class="muted" id="settings-runtime-status"></span>
-      </div>
-    </div>
+    <div class="settings-grid">
+      <!-- LEFT COLUMN -->
+      <div class="settings-col">
+        <!-- 1. Local Runtime Engine -->
+        <div class="card">
+          <h2>🖥️ Local Runtime Engine</h2>
+          <p class="muted">Configure which local OpenAI-compatible inference server TaskMatch AI connects to.</p>
+          
+          <label class="field">Quick Server Presets</label>
+          <div class="row" style="gap:8px; margin-bottom:12px; flex-wrap: wrap;">
+            <button class="secondary small" data-preset-url="http://localhost:1234/v1" data-preset-unload="lms unload --all">🔵 LM Studio (:1234)</button>
+            <button class="secondary small" data-preset-url="http://localhost:11434/v1" data-preset-unload="ollama stop">🦙 Ollama (:11434)</button>
+            <button class="secondary small" data-preset-url="http://localhost:8080/v1" data-preset-unload="">⚡ llama.cpp (:8080)</button>
+            <button class="secondary small" data-preset-url="http://localhost:8000/v1" data-preset-unload="">🚀 vLLM (:8000)</button>
+          </div>
 
-    <div class="card">
-      <h2>Frontier Judge</h2>
-      <p class="muted">Opt-in, non-deterministic grading phase using a paid frontier model. See <code>TASK_SPEC.md</code> for what it is and isn't allowed to treat as ground truth. Never runs as part of a normal benchmark run.</p>
-      <label class="field"><input type="checkbox" id="settings-judge-enabled"> Enabled</label>
-      <label class="field" style="margin-top:10px;">Provider</label>
-      <select id="settings-judge-provider">
-        <option value="anthropic">Anthropic</option>
-        <option value="openai">OpenAI</option>
-        <option value="gemini">Gemini</option>
-        <option value="openrouter">OpenRouter</option>
-      </select>
-      <label class="field" style="margin-top:10px;">Model</label>
-      <div class="model-picker">
-        <input type="text" id="settings-judge-model" placeholder="Type to search models..." autocomplete="off" role="combobox" aria-expanded="false" aria-autocomplete="list">
-        <div class="model-picker-menu" id="settings-judge-model-menu" role="listbox" style="display:none;"></div>
-      </div>
-      <p class="muted" id="settings-judge-model-status" style="margin-top:4px;"></p>
-      <div class="row" style="gap:16px; margin-top:10px;">
-        <div>
-          <label class="field" title="Total tasks for the whole run, dealt round-robin across the 6 categories -- not 6 tasks each. Each task costs 2 paid API calls (generate + grade).">Total tasks &#9432;</label>
-          <input type="number" id="settings-judge-num-tasks" min="1" style="width:90px;">
-        </div>
-        <div>
-          <label class="field">Pass threshold (/10)</label>
-          <input type="number" id="settings-judge-pass-threshold" min="0" max="10" style="width:90px;">
-        </div>
-      </div>
-      <div class="row" style="margin-top:12px; align-items:center; gap:10px;">
-        <button class="primary" id="settings-judge-save">Save Judge Settings</button>
-        <span class="muted" id="settings-judge-status"></span>
-      </div>
-    </div>
+          <label class="field">Base URL</label>
+          <input type="text" id="settings-base-url" placeholder="http://localhost:1234/v1">
 
-    <div class="card">
-      <h2>Frontier API Keys</h2>
-      <p class="muted">Stored in a local, gitignored <code>.env</code> file -- never in <code>config.yaml</code>, never sent anywhere except the provider you select above when the judge phase runs. Keys are never echoed back once saved.</p>
-      <div id="settings-keys-list"></div>
+          <label class="field" style="margin-top:10px;">Request Timeout (seconds)</label>
+          <input type="number" id="settings-timeout" min="1" placeholder="120">
+
+          <label class="field" style="margin-top:10px;">Unload-All Command <span class="muted">(runs before model switch)</span></label>
+          <input type="text" id="settings-unload-cmd" placeholder="lms unload --all">
+
+          <div class="row" style="margin-top:14px; align-items:center; gap:10px; flex-wrap: wrap;">
+            <button class="primary" id="settings-runtime-save">Save Runtime Settings</button>
+            <button class="secondary" id="settings-runtime-test">Test Connection</button>
+            <span id="settings-runtime-status"></span>
+          </div>
+        </div>
+
+        <!-- 2. Dashboard Preferences -->
+        <div class="card">
+          <h2>🎨 Dashboard & Interface Preferences</h2>
+          <p class="muted">Customize theme style and default model comparison behavior.</p>
+          <div class="row" style="gap: 16px; flex-wrap: wrap;">
+            <div style="flex:1; min-width: 140px;">
+              <label class="field">Theme Appearance</label>
+              <select id="settings-theme-select">
+                <option value="dark">🌙 Dark Mode (Default)</option>
+                <option value="glass">✨ Glassmorphism Glow</option>
+              </select>
+            </div>
+            <div style="flex:1; min-width: 140px;">
+              <label class="field">Default Comparison View</label>
+              <select id="settings-default-view">
+                <option value="dedup">Unique Models (Deduplicated)</option>
+                <option value="all">All History Runs</option>
+              </select>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- RIGHT COLUMN -->
+      <div class="settings-col">
+        <!-- 3. Frontier Judge Evaluator -->
+        <div class="card">
+          <h2>⚖️ Frontier Judge Evaluator</h2>
+          <p class="muted">Opt-in, non-deterministic qualitative grading phase powered by a frontier API model.</p>
+
+          <label class="field" style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+            <input type="checkbox" id="settings-judge-enabled" style="accent-color:var(--accent);"> Enable Frontier Judge Phase
+          </label>
+
+          <div class="row" style="gap:12px; margin-top:10px; flex-wrap: wrap;">
+            <div style="flex:1; min-width: 130px;">
+              <label class="field">Provider</label>
+              <select id="settings-judge-provider">
+                <option value="anthropic">Anthropic</option>
+                <option value="openai">OpenAI</option>
+                <option value="gemini">Gemini</option>
+                <option value="openrouter">OpenRouter</option>
+              </select>
+            </div>
+            <div style="flex:2; min-width: 180px;">
+              <label class="field">Model</label>
+              <div class="model-picker">
+                <input type="text" id="settings-judge-model" placeholder="Type to search models..." autocomplete="off" role="combobox" aria-expanded="false" aria-autocomplete="list">
+                <div class="model-picker-menu" id="settings-judge-model-menu" role="listbox" style="display:none;"></div>
+              </div>
+            </div>
+          </div>
+
+          <p class="muted" id="settings-judge-model-status" style="margin-top:4px; font-size:11px;"></p>
+
+          <div class="row" style="gap:16px; margin-top:10px;">
+            <div>
+              <label class="field" title="Total tasks for the whole run.">Total Tasks &#9432;</label>
+              <input type="number" id="settings-judge-num-tasks" min="1" style="width:90px;">
+            </div>
+            <div>
+              <label class="field">Pass Threshold (/10)</label>
+              <input type="number" id="settings-judge-pass-threshold" min="0" max="10" style="width:90px;">
+            </div>
+          </div>
+
+          <div class="row" style="margin-top:14px; align-items:center; gap:10px;">
+            <button class="primary" id="settings-judge-save">Save Judge Settings</button>
+            <span class="muted" id="settings-judge-status"></span>
+          </div>
+        </div>
+
+        <!-- 4. API Keys Vault -->
+        <div class="card">
+          <h2>🔑 Frontier API Keys Vault</h2>
+          <p class="muted">Stored in a local, gitignored <code>.env</code> file — keys are never echoed back once saved.</p>
+          <div id="settings-keys-list"></div>
+        </div>
+      </div>
     </div>
   </section>
 </div>
