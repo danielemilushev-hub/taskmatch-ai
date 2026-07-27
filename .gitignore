@@ -1,0 +1,25 @@
+# secrets
+.env
+
+# results (self-contained JSON/MD/PDF per run -- share individual files manually instead)
+results/runs/
+results/*.md
+results/*.pdf
+results/*.json
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Claude Code local/session state (launch.json itself is useful and kept)
+.claude/settings.local.json
+.claude/scheduled_tasks.lock

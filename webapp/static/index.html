@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>localbench</title>
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <h1>localbench</h1>
+    <span class="sub">which local model should you use for which job</span>
+    <button class="theme-toggle" id="theme-toggle" aria-label="Toggle dark/light theme" title="Toggle theme"></button>
+  </header>
+
+  <nav class="tabs">
+    <button data-view="run" class="active">New Run</button>
+    <button data-view="history">History</button>
+    <button data-view="compare">Compare</button>
+    <button data-view="playground">Playground</button>
+  </nav>
+
+  <!-- NEW RUN -->
+  <section id="view-run" class="view active">
+    <div class="card">
+      <div class="row" style="justify-content: space-between; align-items: center; margin-bottom: 12px;">
+        <h2 style="margin:0;">Models</h2>
+        <div class="row" style="gap: 8px;">
+          <input type="text" id="model-search" placeholder="Search models..." style="width: 170px; padding: 5px 9px; font-size: 12.5px;">
+          <button class="secondary small" id="model-select-all">Select All</button>
+          <button class="secondary small" id="model-deselect-all">Deselect All</button>
+        </div>
+      </div>
+      <div class="row" style="margin-bottom: 12px; align-items: center;">
+        <button class="secondary" id="detect-models">Detect live models</button>
+        <span class="muted" id="detect-status" style="margin-left: 8px;"></span>
+        <span class="muted" id="model-select-count" style="margin-left: auto; font-weight: 600;"></span>
+      </div>
+      <div class="model-grid" id="model-checklist"></div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="justify-content: space-between; align-items: center; margin-bottom: 12px;">
+        <h2 style="margin:0;">Suites</h2>
+        <div class="row" style="gap: 8px;">
+          <button class="secondary small" id="suite-select-all">Select All</button>
+          <button class="secondary small" id="suite-deselect-all">Deselect All</button>
+        </div>
+      </div>
+      <div class="suite-grid" id="suite-checklist"></div>
+    </div>
+
+    <div class="card">
+      <button class="primary" id="start-run">Start Run</button>
+      <span class="muted" id="run-hint">Models are benchmarked one at a time -- this can take a while.</span>
+
+      <div id="run-progress" style="margin-top:16px; display:none;">
+        <div class="banner" id="confirm-banner" style="display:none;">
+          <span id="confirm-message"></span>
+          <button class="secondary" id="confirm-continue">I've loaded it -- Continue</button>
+        </div>
+        <div class="log" id="run-log"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- HISTORY -->
+  <section id="view-history" class="view">
+    <div class="stat-tiles" id="history-stats"></div>
+    <div class="card">
+      <h2>Past Runs</h2>
+      <div id="run-list"></div>
+    </div>
+    <div class="card" id="run-detail-card" style="display:none;">
+      <div class="row" style="justify-content: space-between;">
+        <h2 id="run-detail-title">Run</h2>
+        <div class="dl-links" id="run-detail-links"></div>
+      </div>
+      <div class="filters">
+        <select id="suite-filter"><option value="">All suites</option></select>
+        <select id="model-filter"><option value="">All models</option></select>
+      </div>
+      <div id="run-detail-body"></div>
+    </div>
+  </section>
+
+  <!-- COMPARE -->
+  <section id="view-compare" class="view">
+    <div class="card">
+      <h2>Pick runs to compare</h2>
+      <div id="compare-run-picker" class="checklist"></div>
+    </div>
+    <div id="compare-output"></div>
+  </section>
+
+  <!-- PLAYGROUND -->
+  <section id="view-playground" class="view">
+    <div class="card">
+      <h2>Custom Job</h2>
+      <p class="muted">Test a local model against your own prompt or workflow -- not part of any saved benchmark run.</p>
+      <label class="field">Model</label>
+      <select id="pg-model"></select>
+      <label class="field" style="margin-top:10px;">Prompt</label>
+      <textarea id="pg-prompt" rows="6" placeholder="Paste your own prompt / task here..."></textarea>
+      <label class="field" style="margin-top:10px;">Optional JSON Schema (validates the response as JSON against it)</label>
+      <textarea id="pg-schema" rows="4" placeholder='{"type": "object", "properties": {...}}'></textarea>
+      <div class="row" style="margin-top:10px;">
+        <button class="primary" id="pg-run">Run</button>
+        <span class="muted" id="pg-status"></span>
+      </div>
+      <div id="pg-result" style="margin-top:14px; display:none;">
+        <h3>Response</h3>
+        <pre class="output" id="pg-content"></pre>
+        <h3>Stats</h3>
+        <div class="muted" id="pg-stats"></div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<!-- PROBLEM FAILURE INSPECTOR MODAL -->
+<div id="inspector-modal" class="modal-overlay" style="display:none;">
+  <div class="modal-card">
+    <div class="modal-header">
+      <h2 id="inspector-title">Problem Inspector</h2>
+      <button class="small modal-close" id="inspector-close" title="Close modal">&times;</button>
+    </div>
+    <div class="modal-filters row" style="margin-bottom:12px; justify-content:space-between;">
+      <span class="muted" id="inspector-summary"></span>
+      <div class="checklist" id="inspector-filter-chips"></div>
+    </div>
+    <div class="modal-body" id="inspector-body"></div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

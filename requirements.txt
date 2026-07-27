@@ -1,0 +1,16 @@
+requests==2.34.2
+PyYAML==6.0.3
+jsonschema==4.26.0
+psutil==7.2.2
+xhtml2pdf==0.2.17
+fastapi==0.140.0
+uvicorn==0.51.0
+python-multipart==0.0.32
+python-dotenv==1.2.2
+
+# Frontier judge SDKs (optional -- only install the one(s) matching the
+# provider you configure in config.yaml's `judge:` section; each is
+# imported lazily so the rest of localbench works without any of these):
+# anthropic
+# openai
+# google-genai
