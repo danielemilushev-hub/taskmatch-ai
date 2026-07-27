@@ -11,7 +11,13 @@ ruamel.yaml==0.18.17
 
 # Frontier judge SDKs (optional -- only install the one(s) matching the
 # provider you configure in config.yaml's `judge:` section; each is
-# imported lazily so the rest of localbench works without any of these):
+# imported lazily so the rest of the app works without any of these).
+# The dashboard detects which are missing and tells you the exact
+# install command rather than failing mid-run:
+#   anthropic      -> provider "anthropic"
+#   openai         -> provider "openai" AND provider "openrouter"
+#                     (OpenRouter is OpenAI-compatible and reuses this SDK)
+#   google-genai   -> provider "gemini"
 # anthropic
 # openai
 # google-genai
