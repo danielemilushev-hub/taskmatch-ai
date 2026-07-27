@@ -22,12 +22,30 @@ class ChatResult:
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     total_tokens: int | None = None
+    requested_max_tokens: int | None = None
     raw: dict[str, Any] = field(default_factory=dict)
 
     @property
     def truncated(self) -> bool:
-        """True if the model hit max_tokens before finishing (finish_reason == 'length')."""
-        return self.finish_reason == "length"
+        """True if the response was cut off at the token budget.
+
+        finish_reason == "length" is the documented signal, but it is not
+        reliable on its own: measured across real runs, 21% of
+        pattern_reasoning responses ended at exactly max_tokens while only
+        5.7% carried that finish_reason -- the rest were silently clipped and
+        would have been scored as ordinary wrong answers. Landing exactly on
+        the ceiling is not a coincidence a model produces 11 times, so the
+        token count is treated as corroborating evidence.
+        """
+        if self.finish_reason == "length":
+            return True
+        if (
+            self.requested_max_tokens
+            and self.completion_tokens
+            and self.completion_tokens >= self.requested_max_tokens
+        ):
+            return True
+        return False
 
     @property
     def tokens_per_sec(self) -> float | None:
@@ -189,5 +207,6 @@ def chat_completion(
         prompt_tokens=usage.get("prompt_tokens"),
         completion_tokens=usage.get("completion_tokens"),
         total_tokens=usage.get("total_tokens"),
+        requested_max_tokens=max_tokens,
         raw={"finish_reason": finish_reason, "usage": usage},
     )

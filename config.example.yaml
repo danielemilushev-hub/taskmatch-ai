@@ -77,11 +77,11 @@ suites:
     enabled: true
     num_problems: 20
     seed: 42
-    max_tokens: 3072
+    max_tokens: 4096
     # this suite makes the model reason much longer than the others (a 120s
     # global timeout cut off in-progress generations even after raising
     # max_tokens) -- confirmed fixed at 240s against gemma live.
-    call_timeout_seconds: 240
+    call_timeout_seconds: 360
   long_context:
     enabled: true
     num_problems: 8
