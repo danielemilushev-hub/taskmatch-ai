@@ -390,6 +390,17 @@ def run_continue(run_id: str) -> dict:
     return {"ok": True}
 
 
+@app.post("/api/run/{run_id}/cancel")
+def run_cancel(run_id: str) -> dict:
+    """Stop an in-progress run at the next problem boundary. Partial results
+    are discarded rather than saved -- a half-finished suite has fewer
+    problems than it reports, so its pass rate and confidence interval would
+    both be wrong and would skew any comparison it appeared in."""
+    if not run_manager.cancel_run(run_id):
+        raise HTTPException(404, "run not found or already finished")
+    return {"ok": True}
+
+
 @app.get("/api/runs")
 def list_runs() -> list:
     return storage.list_runs()

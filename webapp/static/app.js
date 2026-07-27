@@ -875,6 +875,8 @@ document.getElementById("start-run").addEventListener("click", async () => {
     });
     state.activeRunId = run_id;
     localStorage.setItem("localbench-active-run", run_id);
+    document.getElementById("stop-run").style.display = "";
+    document.getElementById("stop-run").disabled = false;
     pollRun();
   } catch (e) {
     document.getElementById("run-log").textContent = "failed to start: " + e.message;
@@ -894,6 +896,7 @@ async function resumeActiveRunIfAny() {
     state.activeRunId = savedRunId;
     document.getElementById("start-run").disabled = true;
     document.getElementById("run-progress").style.display = "block";
+    document.getElementById("stop-run").style.display = "";
     pollRun();
   } catch (e) {
     localStorage.removeItem("localbench-active-run");
@@ -910,6 +913,7 @@ function pollRun() {
       document.getElementById("run-log").textContent += `\n\n(lost connection to run: ${e.message})`;
       localStorage.removeItem("localbench-active-run");
       document.getElementById("start-run").disabled = false;
+      document.getElementById("stop-run").style.display = "none";
       return;
     }
     document.getElementById("run-log").textContent = data.log.join("\n");
@@ -927,6 +931,7 @@ function pollRun() {
     if (data.done) {
       localStorage.removeItem("localbench-active-run");
       document.getElementById("start-run").disabled = false;
+      document.getElementById("stop-run").style.display = "none";
       if (data.error) {
         document.getElementById("run-log").textContent += `\n\nERROR: ${data.error}`;
       } else {
@@ -938,6 +943,30 @@ function pollRun() {
   };
   poll();
 }
+
+
+document.getElementById("stop-run")?.addEventListener("click", async () => {
+  const ok = await confirmDialog({
+    title: "Stop this run?",
+    message:
+      "The run halts after the problem currently in flight finishes. " +
+      "Partial results are discarded, not saved: a half-finished suite has " +
+      "fewer problems than it reports, so its pass rate and confidence " +
+      "interval would both be wrong and would skew any comparison it appeared in.",
+    confirmLabel: "Stop run",
+    danger: true,
+  });
+  if (!ok) return;
+  const btn = document.getElementById("stop-run");
+  btn.disabled = true;
+  try {
+    await api(`/api/run/${state.activeRunId}/cancel`, { method: "POST" });
+    document.getElementById("run-log").textContent += "\n\nStopping after the current problem...";
+  } catch (e) {
+    btn.disabled = false;
+    alert("Could not stop the run: " + apiErrorDetail(e));
+  }
+});
 
 document.getElementById("confirm-continue").addEventListener("click", async () => {
   await api(`/api/run/${state.activeRunId}/continue`, { method: "POST" });

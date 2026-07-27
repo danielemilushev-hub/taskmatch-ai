@@ -31,6 +31,17 @@ from .suites import (
     pattern_reasoning_suite,
 )
 
+class RunCancelled(Exception):
+    """Raised to unwind a run the user stopped from the dashboard.
+
+    Cancellation is delivered through the per-problem progress callback,
+    which every suite already calls after each problem. That avoids
+    threading a stop-flag parameter through six suite signatures, and it
+    means a run can only be interrupted at a problem boundary -- never
+    midway through grading, which would produce a half-written result.
+    """
+
+
 DEFAULT_PAUSE_PROMPT = (
     "\n>>> Load model '{model}' in your runtime, then press Enter to continue... "
 )
@@ -40,10 +51,12 @@ def _default_confirm(message: str) -> None:
     input(message)
 
 
-def _make_progress_logger(log, model_name: str, suite_name: str):
+def _make_progress_logger(log, model_name: str, suite_name: str, should_cancel=None):
     def on_progress(idx: int, total: int, problem_id: str, passed: bool) -> None:
         status = "PASS" if passed else "FAIL"
         log(f"    [{model_name}] {suite_name} [{idx}/{total}] {problem_id}: {status}")
+        if should_cancel is not None and should_cancel():
+            raise RunCancelled(f"stopped during {suite_name} after {idx}/{total} problems")
 
     return on_progress
 
@@ -122,9 +135,14 @@ def run_benchmark(
     progress_cb=None,
     confirm_cb=None,
     run_frontier_graded: bool = False,
+    should_cancel=None,
 ) -> RunRecord:
     log = progress_cb or print
     confirm = confirm_cb or _default_confirm
+
+    def _check_cancel(where: str) -> None:
+        if should_cancel is not None and should_cancel():
+            raise RunCancelled(f"stopped before {where}")
 
     runtime_cfg = config["runtime"]
     base_url = runtime_cfg["base_url"]
@@ -169,6 +187,7 @@ def run_benchmark(
     models = config["models"]
     for i, model_cfg in enumerate(models):
         model_name = model_cfg["name"]
+        _check_cancel(f"loading {model_name}")
         log(f"[{i + 1}/{len(models)}] switching to model: {model_name}")
         _switch_to_model(model_cfg, base_url, unload_all_cmd, log, confirm)
 
@@ -193,7 +212,7 @@ def run_benchmark(
                     ctx,
                     max_tokens=json_schema_cfg.get("max_tokens"),
                     call_timeout_seconds=json_schema_cfg.get("call_timeout_seconds"),
-                    on_progress=_make_progress_logger(log, model_name, "json_schema"),
+                    on_progress=_make_progress_logger(log, model_name, should_cancel=should_cancel, suite_name="json_schema"),
                 )
             model_result.suites["json_schema"] = SuiteRunResult(
                 suite="json_schema", problems=problems, resource_usage=mon.summary()
@@ -211,7 +230,7 @@ def run_benchmark(
                     seed=coding_cfg.get("seed", 42),
                     max_tokens=coding_cfg.get("max_tokens"),
                     call_timeout_seconds=coding_cfg.get("call_timeout_seconds"),
-                    on_progress=_make_progress_logger(log, model_name, "coding"),
+                    on_progress=_make_progress_logger(log, model_name, should_cancel=should_cancel, suite_name="coding"),
                 )
             model_result.suites["coding"] = SuiteRunResult(
                 suite="coding", problems=problems, resource_usage=mon.summary()
@@ -227,7 +246,7 @@ def run_benchmark(
                     seed=logic_math_cfg.get("seed", 42),
                     max_tokens=logic_math_cfg.get("max_tokens"),
                     call_timeout_seconds=logic_math_cfg.get("call_timeout_seconds"),
-                    on_progress=_make_progress_logger(log, model_name, "logic_math"),
+                    on_progress=_make_progress_logger(log, model_name, should_cancel=should_cancel, suite_name="logic_math"),
                 )
             model_result.suites["logic_math"] = SuiteRunResult(
                 suite="logic_math", problems=problems, resource_usage=mon.summary()
@@ -243,7 +262,7 @@ def run_benchmark(
                     seed=instruction_following_cfg.get("seed", 42),
                     max_tokens=instruction_following_cfg.get("max_tokens"),
                     call_timeout_seconds=instruction_following_cfg.get("call_timeout_seconds"),
-                    on_progress=_make_progress_logger(log, model_name, "instruction_following"),
+                    on_progress=_make_progress_logger(log, model_name, should_cancel=should_cancel, suite_name="instruction_following"),
                 )
             model_result.suites["instruction_following"] = SuiteRunResult(
                 suite="instruction_following", problems=problems, resource_usage=mon.summary()
@@ -259,7 +278,7 @@ def run_benchmark(
                     seed=pattern_reasoning_cfg.get("seed", 42),
                     max_tokens=pattern_reasoning_cfg.get("max_tokens"),
                     call_timeout_seconds=pattern_reasoning_cfg.get("call_timeout_seconds"),
-                    on_progress=_make_progress_logger(log, model_name, "pattern_reasoning"),
+                    on_progress=_make_progress_logger(log, model_name, should_cancel=should_cancel, suite_name="pattern_reasoning"),
                 )
             model_result.suites["pattern_reasoning"] = SuiteRunResult(
                 suite="pattern_reasoning", problems=problems, resource_usage=mon.summary()
@@ -277,7 +296,7 @@ def run_benchmark(
                     window_lines=long_context_cfg.get("window_lines", 1000),
                     timeout_seconds=long_context_cfg.get("timeout_seconds", 180),
                     max_tokens=long_context_cfg.get("max_tokens"),
-                    on_progress=_make_progress_logger(log, model_name, "long_context"),
+                    on_progress=_make_progress_logger(log, model_name, should_cancel=should_cancel, suite_name="long_context"),
                 )
             model_result.suites["long_context"] = SuiteRunResult(
                 suite="long_context", problems=problems, resource_usage=mon.summary()

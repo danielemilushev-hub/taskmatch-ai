@@ -26,7 +26,7 @@ import uuid
 from pathlib import Path
 
 from localbench.live_monitor import LiveHardwareMonitor
-from localbench.runner import run_benchmark
+from localbench.runner import RunCancelled, run_benchmark
 from localbench.storage import validate_run_id
 
 _ORPHANED_MESSAGE = (
@@ -44,6 +44,7 @@ class ActiveRun:
         self.status = "running"  # running | waiting_confirm | done | error
         self.pending_message: str | None = None
         self.confirm_event = threading.Event()
+        self.cancel_event = threading.Event()
         self.result_run_id: str | None = None
         self.error: str | None = None
         self.thread: threading.Thread | None = None
@@ -73,7 +74,11 @@ class ActiveRun:
         self.status = "waiting_confirm"
         self._persist()
         self.confirm_event.clear()
-        self.confirm_event.wait()
+        while not self.confirm_event.wait(timeout=0.5):
+            if self.cancel_event.is_set():
+                # unblock the waiting thread; run_benchmark's next cancel
+                # check turns this into a clean RunCancelled
+                return
         self.status = "running"
         self.pending_message = None
         self._persist()
@@ -88,9 +93,18 @@ class ActiveRun:
                     progress_cb=self.log,
                     confirm_cb=self.confirm,
                     run_frontier_graded=self.run_frontier_graded,
+                    should_cancel=self.cancel_event.is_set,
                 )
                 self.result_run_id = record.run_id
                 self.status = "done"
+                self._persist()
+            except RunCancelled as e:
+                # Deliberately NOT saved. A partial run has fewer problems per
+                # suite than it claims, so its pass rates and confidence
+                # intervals would be wrong, and it would quietly skew any
+                # comparison it appeared in.
+                self.log(f"RUN STOPPED: {e}. Partial results were discarded.")
+                self.status = "cancelled"
                 self._persist()
             except Exception as e:  # noqa: BLE001 -- surface any failure to the UI, don't crash the thread silently
                 self.error = str(e)
@@ -110,7 +124,7 @@ class ActiveRun:
             "pending_message": self.pending_message,
             "error": self.error,
             "result_run_id": self.result_run_id,
-            "done": self.status in ("done", "error"),
+            "done": self.status in ("done", "error", "cancelled"),
         }
         if include_samples:
             data["resource_samples"] = self.live_monitor.latest_samples()
@@ -172,6 +186,14 @@ class RunManager:
             except (json.JSONDecodeError, OSError):
                 return None
         return None
+
+    def cancel_run(self, run_id: str) -> bool:
+        active = self._runs.get(run_id)
+        if active is None:
+            return False
+        active.cancel_event.set()
+        active.confirm_event.set()  # release a run parked on a manual switch
+        return True
 
     def continue_run(self, run_id: str) -> bool:
         active = self._runs.get(run_id)
