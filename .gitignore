@@ -3,6 +3,7 @@
 
 # results (self-contained JSON/MD/PDF per run -- share individual files manually instead)
 results/runs/
+results/active/
 results/*.md
 results/*.pdf
 results/*.json
