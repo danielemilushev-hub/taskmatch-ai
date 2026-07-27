@@ -27,6 +27,7 @@ from pathlib import Path
 
 from localbench.live_monitor import LiveHardwareMonitor
 from localbench.runner import run_benchmark
+from localbench.storage import validate_run_id
 
 _ORPHANED_MESSAGE = (
     "server restarted while this run was in progress -- its outcome is unknown; "
@@ -52,7 +53,14 @@ class ActiveRun:
 
     def _persist(self) -> None:
         try:
-            self.state_file.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
+            # Deliberately persists to_dict(include_samples=False): the live
+            # hardware samples are real-time-only by design, and writing them
+            # here would rewrite a ~40KB rolling buffer to disk on every
+            # single log line (now one per problem), for data that is
+            # meaningless after the process that produced it has exited.
+            self.state_file.write_text(
+                json.dumps(self.to_dict(include_samples=False), indent=2), encoding="utf-8"
+            )
         except OSError:
             pass  # best-effort only -- the in-memory state is authoritative while the process is alive
 
@@ -94,17 +102,19 @@ class ActiveRun:
         self.thread = threading.Thread(target=target, daemon=True)
         self.thread.start()
 
-    def to_dict(self) -> dict:
-        return {
+    def to_dict(self, include_samples: bool = True) -> dict:
+        data = {
             "run_id": self.run_id,
             "status": self.status,
             "log": self.log_lines,
             "pending_message": self.pending_message,
             "error": self.error,
             "result_run_id": self.result_run_id,
-            "resource_samples": self.live_monitor.latest_samples(),
             "done": self.status in ("done", "error"),
         }
+        if include_samples:
+            data["resource_samples"] = self.live_monitor.latest_samples()
+        return data
 
 
 class RunManager:
@@ -149,6 +159,12 @@ class RunManager:
         # Not in this process's memory -- check disk in case it's a run from
         # before a restart. _mark_orphaned_runs_on_startup() already ensured
         # anything non-terminal here has a real, honest error status.
+        # run_id comes straight from the URL here, so it must be validated
+        # before it's used to build a path (see storage.validate_run_id).
+        try:
+            run_id = validate_run_id(run_id)
+        except ValueError:
+            return None
         state_file = self.active_dir / f"{run_id}.json"
         if state_file.exists():
             try:

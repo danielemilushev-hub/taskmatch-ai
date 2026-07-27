@@ -76,7 +76,7 @@
       <p class="muted" id="frontier-judge-cost"></p>
     </div>
     <div class="card" id="frontier-judge-disabled-note" style="display:none;">
-      <p class="muted">Frontier judge not configured -- enable it and add an API key in <a href="#" data-view-link="settings">Settings</a> to unlock an optional 7th, paid, non-deterministic suite.</p>
+      <p class="muted" id="frontier-judge-disabled-text"></p>
     </div>
 
     <div class="card">
@@ -189,7 +189,7 @@
       <p class="muted" id="settings-judge-model-status" style="margin-top:4px;"></p>
       <div class="row" style="gap:16px; margin-top:10px;">
         <div>
-          <label class="field">Tasks per category</label>
+          <label class="field" title="Total tasks for the whole run, dealt round-robin across the 6 categories -- not 6 tasks each. Each task costs 2 paid API calls (generate + grade).">Total tasks &#9432;</label>
           <input type="number" id="settings-judge-num-tasks" min="1" style="width:90px;">
         </div>
         <div>

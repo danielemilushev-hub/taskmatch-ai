@@ -8,6 +8,7 @@ that one file.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from .results import RunRecord
@@ -45,11 +46,21 @@ def list_runs(results_dir: str | Path = "results") -> list[dict]:
     return summaries
 
 
+_RUN_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
 def validate_run_id(run_id: str) -> str:
-    """run_id ends up in a filesystem path -- reject anything that isn't the
-    plain timestamp-shaped id we generate ourselves, to rule out path
-    traversal via a crafted id in an API request."""
-    if not run_id or any(c in run_id for c in ("/", "\\", "..")):
+    """run_id ends up in a filesystem path, so validate it with a strict
+    ALLOWLIST rather than by blocking known-bad characters.
+
+    A denylist here was genuinely unsafe on Windows: blocking only "/", "\\"
+    and ".." still let a drive-relative path like "D:evil" through, and
+    Path("results/runs") / "D:evil.json" resolves against the *current
+    directory on drive D*, not under results/ at all -- which made both the
+    raw-JSON download and the delete endpoint reach arbitrary files outside
+    the results directory. Only the characters we actually generate
+    (timestamps and uuid4 hex) are permitted."""
+    if not isinstance(run_id, str) or not _RUN_ID_RE.match(run_id):
         raise ValueError(f"invalid run_id: {run_id!r}")
     return run_id
 

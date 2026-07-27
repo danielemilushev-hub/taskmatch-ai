@@ -43,9 +43,25 @@ ALL_SUITES = [
 ]
 
 
+# The dashboard's JS/CSS are edited constantly and served from localhost with
+# no content hashing in the URL, so a browser that heuristically caches them
+# will happily keep running a stale app.js against a freshly-restarted server
+# -- which looks exactly like "my change did nothing" or "this feature is
+# broken". Always revalidate; there's no bandwidth argument for caching on
+# loopback anyway.
+_NO_CACHE = {"Cache-Control": "no-cache, must-revalidate", "Pragma": "no-cache"}
+
+
+class NoCacheStaticFiles(StaticFiles):
+    def file_response(self, *args, **kwargs):  # type: ignore[override]
+        resp = super().file_response(*args, **kwargs)
+        resp.headers.update(_NO_CACHE)
+        return resp
+
+
 @app.get("/")
 def index() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html")
+    return FileResponse(STATIC_DIR / "index.html", headers=_NO_CACHE)
 
 
 def _get_suite_task_count(name: str, config: dict) -> int:
@@ -231,7 +247,16 @@ def judge_cost_estimate(provider: str, model: str, num_tasks: int) -> dict:
         }
 
     history = judge_history(provider, model)
-    if not history["found"] or history.get("avg_judge_prompt_tokens") is None:
+    # Both token figures are needed and can legitimately diverge -- a provider
+    # can report prompt tokens while omitting completion tokens (e.g. Gemini
+    # leaves candidates_token_count off a blocked/empty response), and each
+    # averages independently. Checking only one left the other free to be
+    # None, which crashed the multiplication below with a TypeError.
+    if (
+        not history["found"]
+        or history.get("avg_judge_prompt_tokens") is None
+        or history.get("avg_judge_completion_tokens") is None
+    ):
         return {
             "available": False,
             "reason": "No previous run with this exact model yet -- token usage can't be estimated until after a first run.",
@@ -348,29 +373,32 @@ def list_runs() -> list:
     return storage.list_runs()
 
 
-@app.get("/api/runs/{run_id}")
-def get_run(run_id: str) -> dict:
+def _load_run_or_http_error(run_id: str) -> dict:
+    """Shared guard: an invalid run_id is a 400 (bad request), a valid-but-
+    unknown one is a 404. Without this, validate_run_id's ValueError escapes
+    as an unhandled 500."""
     try:
         return storage.load_run(run_id)
+    except ValueError:
+        raise HTTPException(400, "invalid run_id")
     except FileNotFoundError:
         raise HTTPException(404, "run not found")
+
+
+@app.get("/api/runs/{run_id}")
+def get_run(run_id: str) -> dict:
+    return _load_run_or_http_error(run_id)
 
 
 @app.get("/api/runs/{run_id}/report.md")
 def get_run_markdown(run_id: str) -> PlainTextResponse:
-    try:
-        data = storage.load_run(run_id)
-    except FileNotFoundError:
-        raise HTTPException(404, "run not found")
+    data = _load_run_or_http_error(run_id)
     return PlainTextResponse(report.render_markdown(data), media_type="text/markdown")
 
 
 @app.get("/api/runs/{run_id}/report.pdf")
 def get_run_pdf(run_id: str) -> FileResponse:
-    try:
-        data = storage.load_run(run_id)
-    except FileNotFoundError:
-        raise HTTPException(404, "run not found")
+    data = _load_run_or_http_error(run_id)
     tmp_path = Path(tempfile.gettempdir()) / f"localbench_{run_id}.pdf"
     report.render_pdf(data, tmp_path)
     return FileResponse(tmp_path, media_type="application/pdf", filename=f"{run_id}.pdf")
@@ -452,4 +480,4 @@ def run_custom(payload: dict) -> dict:
     return result
 
 
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+app.mount("/static", NoCacheStaticFiles(directory=STATIC_DIR), name="static")

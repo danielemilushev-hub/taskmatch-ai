@@ -92,8 +92,13 @@ def _gpu_info_windows_registry() -> list[dict] | None:
     if platform.system() != "Windows":
         return None
 
+    # CurrentControlSet, not a hardcoded ControlSet001: the former is the
+    # symlink to whichever control set actually booted. They're usually the
+    # same, but after a failed boot / Last Known Good recovery the active set
+    # can be ControlSet002+, and reading 001 would then report a stale or
+    # missing adapter.
     script = (
-        f"Get-ChildItem 'HKLM:\\SYSTEM\\ControlSet001\\Control\\Class\\{_DISPLAY_CLASS_GUID}' "
+        f"Get-ChildItem 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Class\\{_DISPLAY_CLASS_GUID}' "
         "-ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -match '^\\d+$' } | "
         "ForEach-Object { $p = Get-ItemProperty -Path $_.PSPath -ErrorAction SilentlyContinue; "
         "if ($p.'HardwareInformation.qwMemorySize') { "

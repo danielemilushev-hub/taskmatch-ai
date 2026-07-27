@@ -378,21 +378,36 @@ async function loadConfig() {
 async function loadFrontierJudgeCard() {
   const card = document.getElementById("frontier-judge-card");
   const disabledNote = document.getElementById("frontier-judge-disabled-note");
+  const disabledText = document.getElementById("frontier-judge-disabled-text");
   try {
     const settings = await api("/api/settings");
     state.judgeSettings = settings.judge;
     state.judgeKeys = settings.keys;
-    const anyKeySet = Object.values(settings.keys).some(Boolean);
-    if (settings.judge.enabled && anyKeySet) {
+    const provider = settings.judge.provider || "anthropic";
+    const hasKeyForProvider = !!settings.keys[provider];
+
+    if (settings.judge.enabled && hasKeyForProvider) {
       card.style.display = "block";
       disabledNote.style.display = "none";
-      const provider = settings.judge.provider || "anthropic";
       document.getElementById("run-judge-provider").value = provider;
       document.getElementById("run-judge-model").value = settings.judge.model || "";
       await Promise.all([loadJudgeModelOptions(provider), updateFrontierJudgeInfo()]);
     } else {
       card.style.display = "none";
       disabledNote.style.display = "block";
+      // Diagnose exactly what's missing rather than one generic message --
+      // "not enabled" and "no key for the selected provider" are different
+      // problems with different fixes, and it's easy to fix one while
+      // forgetting the other (e.g. picking + saving a provider/model
+      // without separately checking "Enabled").
+      const missing = [];
+      if (!settings.judge.enabled) missing.push('the "Enabled" checkbox is unchecked');
+      // provider is escaped: it originates from config.yaml, which a user can
+      // hand-edit to anything, and this string goes into innerHTML.
+      if (!hasKeyForProvider) missing.push(`no API key is set for ${escapeHtml(PROVIDER_LABELS[provider] || provider)} (the currently configured provider)`);
+      disabledText.innerHTML =
+        `Frontier judge isn't active yet: ${missing.join(" and ")}. Fix this in ` +
+        `<a href="#" data-view-link="settings">Settings</a> to unlock an optional 7th, paid, non-deterministic suite.`;
     }
   } catch {
     card.style.display = "none";
@@ -505,11 +520,11 @@ function fmtDuration(seconds) {
 document.getElementById("run-judge-provider")?.addEventListener("change", onJudgeProviderChange);
 document.getElementById("run-judge-model")?.addEventListener("change", updateFrontierJudgeInfo);
 
-document.querySelectorAll('[data-view-link]').forEach((link) => {
-  link.addEventListener("click", (e) => {
-    e.preventDefault();
-    document.querySelector(`[data-view="${link.dataset.viewLink}"]`)?.click();
-  });
+document.addEventListener("click", (e) => {
+  const link = e.target.closest("[data-view-link]");
+  if (!link) return;
+  e.preventDefault();
+  document.querySelector(`[data-view="${link.dataset.viewLink}"]`)?.click();
 });
 
 // Attach Suite Selection Controls
@@ -893,12 +908,14 @@ async function showRunDetail(runId) {
 
   const suiteNames = new Set();
   Object.values(data.models).forEach((m) => Object.keys(m.suites).forEach((s) => suiteNames.add(s)));
+  // Model/suite names come from the runtime and from saved run files, so they
+  // are escaped rather than interpolated raw into option markup.
   const suiteFilter = document.getElementById("suite-filter");
   suiteFilter.innerHTML = '<option value="">All suites</option>' +
-    Array.from(suiteNames).map((s) => `<option value="${s}">${s}</option>`).join("");
+    Array.from(suiteNames).map((s) => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join("");
   const modelFilter = document.getElementById("model-filter");
   modelFilter.innerHTML = '<option value="">All models</option>' +
-    Object.keys(data.models).map((m) => `<option value="${m}">${m}</option>`).join("");
+    Object.keys(data.models).map((m) => `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join("");
 
   suiteFilter.onchange = () => renderRunDetail(data, suiteFilter.value, modelFilter.value);
   modelFilter.onchange = () => renderRunDetail(data, suiteFilter.value, modelFilter.value);
@@ -1114,7 +1131,9 @@ async function populatePlaygroundModels() {
     if (detected.models?.length) models = detected.models;
   } catch (e) {
   }
-  select.innerHTML = models.map((m) => `<option value="${m}">${m}</option>`).join("");
+  select.innerHTML = models
+    .map((m) => `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`)
+    .join("");
 }
 
 document.getElementById("pg-run").addEventListener("click", async () => {
