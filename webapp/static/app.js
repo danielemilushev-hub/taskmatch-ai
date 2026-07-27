@@ -404,15 +404,24 @@ function renderSuiteGrid(container, suitesConfig, selectedSet) {
     badge.textContent = `${taskCount} tasks`;
     footer.appendChild(badge);
 
-    const infoBtn = document.createElement("span");
-    infoBtn.className = "info-icon";
-    infoBtn.innerHTML = " &#9432;";
-    infoBtn.title = meta.info;
-    infoBtn.style.cursor = "help";
-    infoBtn.style.opacity = "0.7";
+    const infoBtn = document.createElement("button");
+    infoBtn.type = "button";
+    infoBtn.className = "suite-info-badge";
+    infoBtn.setAttribute("aria-label", `Info about ${meta.title}`);
+    infoBtn.innerHTML = `<span>i</span>
+      <div class="suite-glass-tooltip">
+        <div class="tooltip-header">
+          <span class="tooltip-icon">${meta.icon}</span>
+          <strong>${escapeHtml(meta.title)}</strong>
+        </div>
+        <div class="tooltip-tag">⚡ Deterministic Exact-Match</div>
+        <div class="tooltip-body">${escapeHtml(meta.info)}</div>
+        <div class="tooltip-footer">Scope: ${taskCount} tasks · No LLM Judge</div>
+      </div>`;
+
     infoBtn.addEventListener("click", (e) => {
       e.stopPropagation();
-      alert(meta.info);
+      e.preventDefault();
     });
     footer.appendChild(infoBtn);
 
