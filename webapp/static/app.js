@@ -36,6 +36,7 @@ document.querySelectorAll("nav.tabs button").forEach((btn) => {
     if (btn.dataset.view === "history") loadRunList();
     if (btn.dataset.view === "playground") populatePlaygroundModels();
     if (btn.dataset.view === "compare") loadComparePicker();
+    if (btn.dataset.view === "settings") loadSettings();
   });
 });
 
@@ -1808,6 +1809,157 @@ async function renderCompare() {
   output.appendChild(buildTTFTChart(series, categories, getSuite));
   output.appendChild(buildFullComparisonTable(series, categories, getSuite, runs));
 }
+
+// ---------- settings ----------
+const PROVIDER_LABELS = {
+  anthropic: "Anthropic",
+  openai: "OpenAI",
+  gemini: "Gemini",
+  openrouter: "OpenRouter",
+};
+
+function apiErrorDetail(err) {
+  const match = /^\d+: (.*)$/s.exec(err.message || "");
+  if (!match) return err.message || String(err);
+  try {
+    return JSON.parse(match[1]).detail || match[1];
+  } catch {
+    return match[1];
+  }
+}
+
+async function loadSettings() {
+  const data = await api("/api/settings");
+  document.getElementById("settings-base-url").value = data.runtime.base_url || "";
+  document.getElementById("settings-timeout").value = data.runtime.request_timeout_seconds ?? "";
+  document.getElementById("settings-unload-cmd").value = data.runtime.unload_all_cmd || "";
+
+  document.getElementById("settings-judge-enabled").checked = !!data.judge.enabled;
+  document.getElementById("settings-judge-provider").value = data.judge.provider || "anthropic";
+  document.getElementById("settings-judge-model").value = data.judge.model || "";
+  document.getElementById("settings-judge-num-tasks").value = data.judge.num_tasks ?? "";
+  document.getElementById("settings-judge-pass-threshold").value = data.judge.pass_threshold ?? "";
+
+  renderKeysList(data.keys);
+}
+
+function renderKeysList(keys) {
+  const container = document.getElementById("settings-keys-list");
+  container.innerHTML = "";
+  Object.entries(PROVIDER_LABELS).forEach(([provider, label]) => {
+    const isSet = !!keys[provider];
+
+    const row = document.createElement("div");
+    row.className = "key-row";
+
+    const labelEl = document.createElement("span");
+    labelEl.className = "key-row-label";
+    labelEl.textContent = label;
+    row.appendChild(labelEl);
+
+    const statusEl = document.createElement("span");
+    statusEl.className = "key-status " + (isSet ? "key-set" : "key-unset");
+    statusEl.textContent = isSet ? "● Set" : "○ Not set";
+    row.appendChild(statusEl);
+
+    const input = document.createElement("input");
+    input.type = "password";
+    input.placeholder = isSet ? "•••••••••••• (leave blank to keep)" : "paste API key";
+    input.className = "key-row-input";
+    row.appendChild(input);
+
+    const saveBtn = document.createElement("button");
+    saveBtn.className = "secondary small";
+    saveBtn.textContent = "Save";
+    saveBtn.addEventListener("click", async () => {
+      if (!input.value.trim()) return;
+      try {
+        const res = await api("/api/settings/keys", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ provider, api_key: input.value }),
+        });
+        renderKeysList(res.keys);
+      } catch (e) {
+        alert(`Failed to save ${label} key: ${apiErrorDetail(e)}`);
+      }
+    });
+    row.appendChild(saveBtn);
+
+    const clearBtn = document.createElement("button");
+    clearBtn.className = "secondary small";
+    clearBtn.textContent = "Clear";
+    clearBtn.disabled = !isSet;
+    clearBtn.addEventListener("click", async () => {
+      try {
+        const res = await api(`/api/settings/keys/${provider}`, { method: "DELETE" });
+        renderKeysList(res.keys);
+      } catch (e) {
+        alert(`Failed to clear ${label} key: ${apiErrorDetail(e)}`);
+      }
+    });
+    row.appendChild(clearBtn);
+
+    container.appendChild(row);
+  });
+}
+
+document.querySelectorAll("[data-preset-url]").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    document.getElementById("settings-base-url").value = btn.dataset.presetUrl;
+  });
+});
+
+document.getElementById("settings-runtime-save")?.addEventListener("click", async () => {
+  const statusEl = document.getElementById("settings-runtime-status");
+  statusEl.textContent = "Saving...";
+  try {
+    await api("/api/settings/runtime", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        base_url: document.getElementById("settings-base-url").value,
+        request_timeout_seconds: Number(document.getElementById("settings-timeout").value),
+        unload_all_cmd: document.getElementById("settings-unload-cmd").value,
+      }),
+    });
+    statusEl.textContent = "Saved.";
+  } catch (e) {
+    statusEl.textContent = `Error: ${apiErrorDetail(e)}`;
+  }
+});
+
+document.getElementById("settings-runtime-test")?.addEventListener("click", async () => {
+  const statusEl = document.getElementById("settings-runtime-status");
+  statusEl.textContent = "Testing...";
+  try {
+    const res = await api("/api/models/detect");
+    statusEl.textContent = `Reachable -- ${res.models.length} model(s) visible.`;
+  } catch (e) {
+    statusEl.textContent = `Unreachable: ${apiErrorDetail(e)}`;
+  }
+});
+
+document.getElementById("settings-judge-save")?.addEventListener("click", async () => {
+  const statusEl = document.getElementById("settings-judge-status");
+  statusEl.textContent = "Saving...";
+  try {
+    await api("/api/settings/judge", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        enabled: document.getElementById("settings-judge-enabled").checked,
+        provider: document.getElementById("settings-judge-provider").value,
+        model: document.getElementById("settings-judge-model").value,
+        num_tasks: Number(document.getElementById("settings-judge-num-tasks").value),
+        pass_threshold: Number(document.getElementById("settings-judge-pass-threshold").value),
+      }),
+    });
+    statusEl.textContent = "Saved.";
+  } catch (e) {
+    statusEl.textContent = `Error: ${apiErrorDetail(e)}`;
+  }
+});
 
 // ---------- init ----------
 loadConfig();

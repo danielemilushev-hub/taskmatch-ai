@@ -23,7 +23,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
-from localbench import report, storage
+from localbench import report, settings_store, storage
 from localbench.config import load_config
 from localbench.engine import RunContext
 from localbench.json_extract import extract_json
@@ -145,6 +145,51 @@ def models_catalog() -> dict:
             "type": entry.get("type"),
         }
     return {"models": catalog}
+
+
+@app.get("/api/settings")
+def get_settings() -> dict:
+    return {
+        "runtime": settings_store.get_runtime_settings(),
+        "judge": settings_store.get_judge_settings(),
+        "keys": settings_store.key_status(),
+    }
+
+
+@app.post("/api/settings/runtime")
+def update_settings_runtime(payload: dict) -> dict:
+    try:
+        return settings_store.update_runtime_settings(payload)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/settings/judge")
+def update_settings_judge(payload: dict) -> dict:
+    try:
+        return settings_store.update_judge_settings(payload)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/settings/keys")
+def set_settings_key(payload: dict) -> dict:
+    provider = payload.get("provider")
+    api_key = payload.get("api_key")
+    try:
+        settings_store.set_api_key(provider, api_key)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True, "keys": settings_store.key_status()}
+
+
+@app.delete("/api/settings/keys/{provider}")
+def clear_settings_key(provider: str) -> dict:
+    try:
+        settings_store.clear_api_key(provider)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True, "keys": settings_store.key_status()}
 
 
 @app.post("/api/run")

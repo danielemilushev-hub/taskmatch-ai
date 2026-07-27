@@ -18,6 +18,7 @@
     <button data-view="history">History</button>
     <button data-view="compare">Compare</button>
     <button data-view="playground">Playground</button>
+    <button data-view="settings">Settings</button>
   </nav>
 
   <!-- NEW RUN -->
@@ -114,6 +115,65 @@
         <h3>Stats</h3>
         <div class="muted" id="pg-stats"></div>
       </div>
+    </div>
+  </section>
+
+  <!-- SETTINGS -->
+  <section id="view-settings" class="view">
+    <div class="card">
+      <h2>Local Runtime</h2>
+      <p class="muted">Which OpenAI-compatible server localbench talks to. Changes are written to <code>config.yaml</code> and take effect on the next run.</p>
+      <div class="row" style="gap:8px; margin-bottom:10px;">
+        <button class="secondary small" data-preset-url="http://localhost:1234/v1">LM Studio</button>
+        <button class="secondary small" data-preset-url="http://localhost:11434/v1">Ollama</button>
+        <button class="secondary small" data-preset-url="http://localhost:8080/v1">llama.cpp</button>
+      </div>
+      <label class="field">Base URL</label>
+      <input type="text" id="settings-base-url" placeholder="http://localhost:1234/v1">
+      <label class="field" style="margin-top:10px;">Request timeout (seconds)</label>
+      <input type="number" id="settings-timeout" min="1">
+      <label class="field" style="margin-top:10px;">Unload-all command (run before switching to any model)</label>
+      <input type="text" id="settings-unload-cmd" placeholder="lms unload --all">
+      <div class="row" style="margin-top:12px; align-items:center; gap:10px;">
+        <button class="primary" id="settings-runtime-save">Save Runtime Settings</button>
+        <button class="secondary" id="settings-runtime-test">Test Connection</button>
+        <span class="muted" id="settings-runtime-status"></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Frontier Judge</h2>
+      <p class="muted">Opt-in, non-deterministic grading phase using a paid frontier model. See <code>TASK_SPEC.md</code> for what it is and isn't allowed to treat as ground truth. Never runs as part of a normal benchmark run.</p>
+      <label class="field"><input type="checkbox" id="settings-judge-enabled"> Enabled</label>
+      <label class="field" style="margin-top:10px;">Provider</label>
+      <select id="settings-judge-provider">
+        <option value="anthropic">Anthropic</option>
+        <option value="openai">OpenAI</option>
+        <option value="gemini">Gemini</option>
+        <option value="openrouter">OpenRouter</option>
+      </select>
+      <label class="field" style="margin-top:10px;">Model</label>
+      <input type="text" id="settings-judge-model" placeholder="claude-sonnet-5">
+      <div class="row" style="gap:16px; margin-top:10px;">
+        <div>
+          <label class="field">Tasks per category</label>
+          <input type="number" id="settings-judge-num-tasks" min="1" style="width:90px;">
+        </div>
+        <div>
+          <label class="field">Pass threshold (/10)</label>
+          <input type="number" id="settings-judge-pass-threshold" min="0" max="10" style="width:90px;">
+        </div>
+      </div>
+      <div class="row" style="margin-top:12px; align-items:center; gap:10px;">
+        <button class="primary" id="settings-judge-save">Save Judge Settings</button>
+        <span class="muted" id="settings-judge-status"></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Frontier API Keys</h2>
+      <p class="muted">Stored in a local, gitignored <code>.env</code> file -- never in <code>config.yaml</code>, never sent anywhere except the provider you select above when the judge phase runs. Keys are never echoed back once saved.</p>
+      <div id="settings-keys-list"></div>
     </div>
   </section>
 </div>

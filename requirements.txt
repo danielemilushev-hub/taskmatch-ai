@@ -7,6 +7,7 @@ fastapi==0.140.0
 uvicorn==0.51.0
 python-multipart==0.0.32
 python-dotenv==1.2.2
+ruamel.yaml==0.18.17
 
 # Frontier judge SDKs (optional -- only install the one(s) matching the
 # provider you configure in config.yaml's `judge:` section; each is
