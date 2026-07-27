@@ -1,4 +1,6 @@
-# localbench
+# TaskMatch AI
+
+**Task-driven evaluation for local LLMs.**
 
 A benchmarking tool for locally-running LLMs (LM Studio, Ollama, llama.cpp,
 or anything else exposing an OpenAI-compatible `/v1/chat/completions`
@@ -171,7 +173,7 @@ Reports always show this suite in a visually distinct "Frontier-Graded
 pass-rate numbers.
 
 Only install the SDK for the provider you're actually using (see
-`requirements.txt`) — each is imported lazily, so the rest of localbench
+`requirements.txt`) — each is imported lazily, so the rest of the app
 works with none of them installed. `openrouter` reuses the `openai`
 package pointed at OpenRouter's endpoint, so it needs no separate SDK.
 
@@ -230,7 +232,7 @@ config.yaml               # your runtime/model/suite/judge configuration
 .env.example               # documents the 4 judge API key names (.env is gitignored)
 TASK_SPEC.md                # the frontier judge's task-generation/grading rubric
 cli.py                       # entry point (run / serve)
-localbench/
+localbench/                # Python package name kept as-is (see note below)
   engine.py                   # runtime-agnostic streaming chat_completion() caller
   runner.py                   # sequential model-switch orchestration + per-problem progress
   report.py                   # markdown/HTML/PDF report rendering
@@ -249,6 +251,14 @@ webapp/
   static/                         # HTML/CSS/JS frontend, no build step
 results/runs/                     # one JSON file per benchmark run (gitignored)
 ```
+
+## Documentation
+
+| Document | Contents |
+|---|---|
+| [SECURITY.md](SECURITY.md) | What data leaves your machine (and what doesn't), how API keys are stored, and the code-execution risk in the `coding` suite. **Read before benchmarking a model you don't trust.** |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Dev setup, tests, how to add a job suite, and the project's core rule on never displaying an unmeasured number. |
+| [TASK_SPEC.md](TASK_SPEC.md) | The rubric the frontier judge is given, including the anti-hallucination contract. |
 
 ## License
 

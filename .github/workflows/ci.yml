@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Windows is the primary target (the live hardware monitor and the
+        # registry VRAM fallback are Windows-only), but the harness itself is
+        # cross-platform and shouldn't regress on Linux.
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Create config from template
+        # config.yaml is gitignored (it's per-user), so CI has to materialise
+        # it the same way a fresh clone does.
+        shell: bash
+        run: cp config.example.yaml config.yaml
+
+      - name: Run tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Import check
+        # Catches syntax errors and broken imports in modules the unit tests
+        # don't reach (webapp, judge providers, monitors).
+        run: |
+          python -c "import cli, webapp.main, webapp.run_manager"
+          python -c "import localbench.runner, localbench.report, localbench.storage"
+          python -c "import localbench.gpu_probe, localbench.live_monitor, localbench.resource_monitor"
+          python -c "import localbench.settings_store, localbench.judge.factory"
+
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fail if a real config or .env was committed
+        run: |
+          if git ls-files --error-unmatch config.yaml 2>/dev/null; then
+            echo "::error::config.yaml is tracked -- it is per-user and must stay gitignored."
+            exit 1
+          fi
+          if git ls-files --error-unmatch .env 2>/dev/null; then
+            echo "::error::.env is tracked -- it holds API keys and must stay gitignored."
+            exit 1
+          fi
+          echo "OK: neither config.yaml nor .env is tracked."
+
+      - name: Scan history for credential patterns
+        run: |
+          set +e
+          MATCHES=$(git rev-list --objects --all \
+            | awk '{print $1}' \
+            | git cat-file --batch-check='%(objecttype) %(objectname)' \
+            | awk '$1=="blob"{print $2}' \
+            | git cat-file --batch \
+            | grep -inE 'AIza[0-9A-Za-z_-]{30,}|sk-ant-api[0-9A-Za-z_-]{20,}|sk-or-v1-[0-9a-f]{40,}|sk-proj-[0-9A-Za-z_-]{20,}|ghp_[0-9A-Za-z]{30,}|-----BEGIN [A-Z ]*PRIVATE KEY')
+          if [ -n "$MATCHES" ]; then
+            echo "::error::Possible credential found in git history."
+            exit 1
+          fi
+          echo "OK: no credential patterns in history."
