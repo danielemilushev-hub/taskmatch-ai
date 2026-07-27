@@ -210,6 +210,9 @@ def run_benchmark(
             with ResourceMonitor() as mon:
                 problems = json_schema_suite.run(
                     ctx,
+                    generated=json_schema_cfg.get("generated", True),
+                    num_problems=json_schema_cfg.get("num_problems", 20),
+                    seed=json_schema_cfg.get("seed", 42),
                     max_tokens=json_schema_cfg.get("max_tokens"),
                     call_timeout_seconds=json_schema_cfg.get("call_timeout_seconds"),
                     on_progress=_make_progress_logger(log, model_name, should_cancel=should_cancel, suite_name="json_schema"),

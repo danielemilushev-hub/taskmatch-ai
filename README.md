@@ -14,11 +14,18 @@ paid frontier one, backed by numbers instead of a guess.
 Six fully deterministic job suites (no LLM-as-judge — every result is
 exact-match, schema-validated, or actually executed):
 
-- **json_schema** — prompts the model for structured JSON against a given
-  schema, validates with `jsonschema`.
-- **coding** — HumanEval-style problems; the model's code is *actually
-  executed* in a sandboxed subprocess against real test cases, not compared
-  as text.
+- **json_schema** — prompts the model for structured JSON against a
+  procedurally generated schema (randomised field types, enums, numeric
+  ranges, regex patterns, nested objects, `additionalProperties: false`),
+  validated with `jsonschema`. The schema is the ground truth and the prompt
+  is generated *from* it, so the task text can never drift from what is
+  actually graded.
+- **coding** — procedurally generated problems (randomised operations,
+  filters, thresholds, orderings); the model's code is *actually executed* in
+  a sandboxed subprocess against real test cases, not compared as text.
+  Expected answers come from running a reference implementation, never
+  hand-written. Deliberately avoids the classic factorial/fibonacci/is_prime
+  set, which is in every training corpus and can be passed from memory.
 - **logic_math** — synthetically generated arithmetic/logic problems (we
   generate them, so the answer is always known), graded by exact match.
 - **instruction_following** — IFEval-style formatting constraints (exact
@@ -39,6 +46,13 @@ pre-run baseline (a useful signal for whether a model spilled out of VRAM
 into CPU/RAM — see Known Limitations for the VRAM caveat). A failed problem
 is also tagged as `truncated` when it hit the token budget mid-thought,
 distinct from actually answering wrong.
+
+**Five of the six suites generate their problems from a seed**, so the exact
+tasks cannot have appeared in any training corpus — the contamination that
+undermines most static public benchmarks. Every pass rate is reported with a
+95% confidence interval, and the head-to-head verdict refuses to name a
+winner when the intervals overlap, rather than presenting measurement noise
+as a result.
 
 A seventh, opt-in **frontier_graded** suite exists for open-ended tasks that
 can't be graded deterministically (see below) — it's never mixed into the

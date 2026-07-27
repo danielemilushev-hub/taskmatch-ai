@@ -53,6 +53,13 @@ models:
 suites:
   json_schema:
     enabled: true
+    # Generated from `seed` so schemas are novel each seed, and N is high
+    # enough for a usable confidence interval. generated: false restores the
+    # original 5 hand-written problems.
+    generated: true
+    num_problems: 20
+    seed: 42
+    max_tokens: 2048
   coding:
     enabled: true
     timeout_seconds: 10
