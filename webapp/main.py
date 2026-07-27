@@ -25,6 +25,7 @@ from fastapi.staticfiles import StaticFiles
 
 from localbench import report, settings_store, storage
 from localbench.config import load_config
+from localbench.profiles import DEFAULT_PROFILE, PROFILES, problems_for
 from localbench.engine import RunContext
 from localbench.json_extract import extract_json
 from webapp.run_manager import RunManager
@@ -99,6 +100,12 @@ def get_config() -> dict:
             name: {
                 "enabled": config.get("suites", {}).get(name, {}).get("enabled", True),
                 "task_count": _get_suite_task_count(name, config),
+                "quick_count": problems_for(
+                    name, "quick", config.get("suites", {}).get(name, {}).get("num_problems")
+                ),
+                "full_count": problems_for(
+                    name, "full", config.get("suites", {}).get(name, {}).get("num_problems")
+                ),
             }
             for name in ALL_SUITES
         },
@@ -334,6 +341,10 @@ def start_run(payload: dict) -> dict:
         for suite_name in ALL_SUITES:
             suites_cfg.setdefault(suite_name, {})["enabled"] = suite_name in suites_filter
 
+    profile = payload.get("profile", DEFAULT_PROFILE)
+    if profile not in PROFILES:
+        raise HTTPException(400, f"unknown profile '{profile}', expected one of {list(PROFILES)}")
+
     run_frontier_graded = bool(payload.get("run_frontier_graded"))
     if run_frontier_graded:
         judge_cfg = config.setdefault("judge", {})
@@ -369,7 +380,7 @@ def start_run(payload: dict) -> dict:
                 f"Install it with:  pip install {PROVIDER_PACKAGES.get(provider, provider)}",
             )
 
-    run_id = run_manager.start_run(config, run_frontier_graded=run_frontier_graded)
+    run_id = run_manager.start_run(config, run_frontier_graded=run_frontier_graded, profile=profile)
     return {"run_id": run_id}
 
 

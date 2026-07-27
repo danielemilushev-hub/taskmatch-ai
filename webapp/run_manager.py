@@ -36,10 +36,11 @@ _ORPHANED_MESSAGE = (
 
 
 class ActiveRun:
-    def __init__(self, run_id: str, config: dict, active_dir: Path, run_frontier_graded: bool = False):
+    def __init__(self, run_id: str, config: dict, active_dir: Path, run_frontier_graded: bool = False, profile: str = "full"):
         self.run_id = run_id
         self.config = config
         self.run_frontier_graded = run_frontier_graded
+        self.profile = profile
         self.log_lines: list[str] = []
         self.status = "running"  # running | waiting_confirm | done | error
         self.pending_message: str | None = None
@@ -94,6 +95,7 @@ class ActiveRun:
                     confirm_cb=self.confirm,
                     run_frontier_graded=self.run_frontier_graded,
                     should_cancel=self.cancel_event.is_set,
+                    profile=self.profile,
                 )
                 self.result_run_id = record.run_id
                 self.status = "done"
@@ -158,9 +160,9 @@ class RunManager:
                 except OSError:
                     pass
 
-    def start_run(self, config: dict, run_frontier_graded: bool = False) -> str:
+    def start_run(self, config: dict, run_frontier_graded: bool = False, profile: str = "full") -> str:
         run_id = uuid.uuid4().hex[:8]
-        active = ActiveRun(run_id, config, self.active_dir, run_frontier_graded=run_frontier_graded)
+        active = ActiveRun(run_id, config, self.active_dir, run_frontier_graded=run_frontier_graded, profile=profile)
         with self._lock:
             self._runs[run_id] = active
         active.start()

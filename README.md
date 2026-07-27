@@ -164,6 +164,25 @@ FastAPI backend + a plain HTML/CSS/JS frontend, no build step. Five tabs:
   pass-threshold, and a per-provider API key manager (stored in a local,
   gitignored `.env`; keys are never echoed back once saved).
 
+## Run profiles
+
+Two sizes, chosen on the New Run tab:
+
+| | Problems | A 90% score gives a 95% CI of |
+|---|---|---|
+| **Quick baseline** | 57 | 79–95% |
+| **Full benchmark** | 114 | 84–95% |
+
+Quick is the **first half of each suite, not a random sample**. Every
+generator emits problems in a deterministic order from its seed, so a quick
+run's problems are a strict prefix of the full run's — the two are directly
+comparable, quick just measures fewer of the same tasks and carries a wider
+interval. Use Quick to iterate (does this quantization help?) and Full when
+you want to separate close models.
+
+Each run records which profile it used, so a Quick and a Full run are never
+silently treated as equivalent.
+
 ## Frontier judge (opt-in, paid)
 
 For tasks that genuinely can't be graded deterministically (instruction-

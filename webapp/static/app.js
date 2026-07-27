@@ -878,6 +878,7 @@ document.getElementById("start-run").addEventListener("click", async () => {
       body: JSON.stringify({
         models: Array.from(state.selectedModels),
         suites: Array.from(state.selectedSuites),
+        profile: selectedProfile(),
         run_frontier_graded: runFrontierGraded,
         judge_override: runFrontierGraded ? { provider: judgeProvider, model: judgeModel } : undefined,
       }),
@@ -981,6 +982,46 @@ document.getElementById("confirm-continue").addEventListener("click", async () =
   await api(`/api/run/${state.activeRunId}/continue`, { method: "POST" });
 });
 
+
+
+// ---------- Run profile (Quick vs Full) ----------
+// Quick is the first half of each suite, not a random sample: every
+// generator emits problems in a deterministic order from its seed, so a
+// quick run's problems are a strict prefix of the full run's. The two stay
+// directly comparable -- quick simply measures fewer of the same tasks and
+// so carries a wider confidence interval.
+function selectedProfile() {
+  return document.querySelector('input[name="run-profile"]:checked')?.value || "full";
+}
+
+function updateProfileUI() {
+  const suites = state.config?.suites || {};
+  const chosen = Array.from(state.selectedSuites);
+  const sum = (key) => chosen.reduce((n, s) => n + (suites[s]?.[key] ?? 0), 0);
+  const quick = sum("quick_count");
+  const full = sum("full_count");
+
+  const q = document.getElementById("profile-quick-count");
+  const f = document.getElementById("profile-full-count");
+  if (q) q.textContent = `${quick} problems`;
+  if (f) f.textContent = `${full} problems`;
+
+  const note = document.getElementById("profile-note");
+  if (!note) return;
+  const n = selectedProfile() === "quick" ? quick : full;
+  const ci = n ? wilsonInterval(Math.round(n * 0.9), n) : null;
+  note.textContent = ci
+    ? `A model scoring 90% over ${n} problems gets a 95% CI of ` +
+      `${Math.round(ci[0] * 100)}-${Math.round(ci[1] * 100)}%. ` +
+      (selectedProfile() === "quick"
+        ? "Quick runs the same problems as Full, just fewer of them, so results stay comparable -- with a wider interval."
+        : "Narrower intervals mean smaller real differences become distinguishable.")
+    : "";
+}
+
+document.querySelectorAll('input[name="run-profile"]').forEach((el) =>
+  el.addEventListener("change", updateProfileUI)
+);
 
 // ---------- Statistical honesty ----------
 // A pass rate over a handful of problems is an estimate, not a fact: 5/5 is

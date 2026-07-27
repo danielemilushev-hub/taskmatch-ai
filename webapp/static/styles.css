@@ -1256,3 +1256,15 @@ nav.tabs button.active {
   cursor: help;
 }
 .verdict-tie { color: var(--text-muted); font-style: italic; }
+
+/* ---- Run profile picker ---- */
+.profile-picker { display: flex; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+.profile-option {
+  display: flex; align-items: center; gap: 8px;
+  padding: 9px 14px; border: 1px solid var(--border);
+  border-radius: 10px; cursor: pointer; background: var(--page);
+}
+.profile-option:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+.profile-option span { display: flex; flex-direction: column; line-height: 1.25; }
+.profile-option strong { font-size: 13px; }
+.profile-option em { font-style: normal; font-size: 11px; color: var(--text-muted); }

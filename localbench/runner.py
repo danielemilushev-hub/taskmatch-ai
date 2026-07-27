@@ -18,6 +18,7 @@ import requests
 
 from .engine import RunContext
 from .hardware import get_hardware_snapshot
+from .profiles import DEFAULT_PROFILE, problems_for
 from .resource_monitor import ResourceMonitor
 from .results import ModelRunResult, RunRecord, SuiteRunResult
 from .storage import save_run
@@ -136,6 +137,7 @@ def run_benchmark(
     confirm_cb=None,
     run_frontier_graded: bool = False,
     should_cancel=None,
+    profile: str = DEFAULT_PROFILE,
 ) -> RunRecord:
     log = progress_cb or print
     confirm = confirm_cb or _default_confirm
@@ -152,6 +154,13 @@ def run_benchmark(
     sampling = config.get("sampling", {})
     suites_cfg = config.get("suites", {})
 
+    # Resolve the profile into concrete per-suite counts once, up front, so
+    # the record below states exactly what was actually run.
+    for _suite, _cfg in suites_cfg.items():
+        _n = problems_for(_suite, profile, _cfg.get("num_problems"))
+        if _n is not None:
+            _cfg["num_problems"] = _n
+
     run_id = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     started_at = datetime.datetime.now().isoformat(timespec="seconds")
 
@@ -163,6 +172,12 @@ def run_benchmark(
             "base_url": base_url,
             "suites_enabled": {k: v.get("enabled", True) for k, v in suites_cfg.items()},
             "sampling": sampling,
+            "profile": profile,
+            "problems_per_suite": {
+                k: v.get("num_problems")
+                for k, v in suites_cfg.items()
+                if v.get("enabled", True) and v.get("num_problems") is not None
+            },
         },
     )
 
