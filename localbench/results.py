@@ -109,6 +109,28 @@ class SuiteRunResult:
         return sum(totals) / len(totals) if totals else None
 
     @property
+    def judge_infrastructure_failed(self) -> bool:
+        """True when EVERY problem failed because the judge itself never
+        answered (auth/quota/network), rather than because the local model
+        did badly.
+
+        Without this the two are indistinguishable in the UI: a depleted API
+        quota produces six failed problems and a 0% pass rate, which reads as
+        "this model scored zero" when in fact it was never graded. Only
+        meaningful for the frontier-graded suite; every other suite grades
+        locally and has no judge to fail."""
+        if not self.problems:
+            return False
+        judge_errors = 0
+        for p in self.problems:
+            if p.passed:
+                return False
+            err = p.error or ""
+            if err.startswith("judge task generation failed:") or err.startswith("judge grading failed:"):
+                judge_errors += 1
+        return judge_errors == len(self.problems)
+
+    @property
     def avg_judge_prompt_tokens(self) -> float | None:
         values = [p.judge_prompt_tokens for p in self.problems if p.judge_prompt_tokens is not None]
         return sum(values) / len(values) if values else None
@@ -132,6 +154,7 @@ class SuiteRunResult:
             "avg_seconds_per_task": self.avg_seconds_per_task,
             "avg_judge_prompt_tokens": self.avg_judge_prompt_tokens,
             "avg_judge_completion_tokens": self.avg_judge_completion_tokens,
+            "judge_infrastructure_failed": self.judge_infrastructure_failed,
             "resource_usage": self.resource_usage,
         }
 

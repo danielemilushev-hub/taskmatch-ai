@@ -542,25 +542,180 @@ async function updateFrontierJudgeInfo() {
   }
 }
 
-async function loadJudgeModelOptions(provider, datalistId = "run-judge-model-options", statusId = "frontier-judge-model-status") {
-  const datalist = document.getElementById(datalistId);
+// Searchable model picker.
+//
+// A native <datalist> collapses under this data: OpenRouter alone returns 342
+// ids, rendered as one flat unfilterable wall, matched only by prefix (so
+// "sonnet" finds nothing in "anthropic/claude-sonnet-5"), with nowhere to put
+// pricing. This is a real combobox: substring matching on both publisher and
+// model name, grouped by publisher, keyboard navigable, and -- for OpenRouter,
+// the one provider that publishes rates -- the live $/1M price inline, so the
+// cost of a judge choice is visible at the moment you pick it.
+const MAX_PICKER_RESULTS = 60;
+
+function fmtRate(perToken) {
+  const perM = perToken * 1_000_000;
+  if (perM === 0) return "free";
+  return perM < 1 ? `$${perM.toFixed(2)}` : `$${perM.toFixed(perM < 10 ? 2 : 0)}`;
+}
+
+function renderPickerMenu(pickerId) {
+  const p = pickerState[pickerId];
+  if (!p) return;
+  const menu = document.getElementById(p.menuId);
+  const input = document.getElementById(pickerId);
+  const query = input.value.trim().toLowerCase();
+
+  const matches = p.models.filter((m) => m.toLowerCase().includes(query));
+  const shown = matches.slice(0, MAX_PICKER_RESULTS);
+  p.matches = shown;
+  if (p.activeIndex >= shown.length) p.activeIndex = shown.length - 1;
+
+  menu.innerHTML = "";
+  if (shown.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "model-picker-empty";
+    empty.textContent = p.models.length
+      ? `No model matches "${input.value.trim()}"`
+      : "No live model list available -- type an id manually.";
+    menu.appendChild(empty);
+    menu.style.display = "block";
+    input.setAttribute("aria-expanded", "true");
+    return;
+  }
+
+  let lastGroup = null;
+  shown.forEach((m, i) => {
+    const group = m.includes("/") ? m.split("/")[0] : "other";
+    if (group !== lastGroup) {
+      const gh = document.createElement("div");
+      gh.className = "model-picker-group";
+      gh.textContent = group;
+      menu.appendChild(gh);
+      lastGroup = group;
+    }
+
+    const row = document.createElement("div");
+    row.className = "model-picker-item" + (i === p.activeIndex ? " active" : "");
+    row.setAttribute("role", "option");
+
+    const label = document.createElement("span");
+    label.className = "model-picker-label";
+    const name = m.includes("/") ? m.slice(m.indexOf("/") + 1) : m;
+    // highlight the matched substring so it's obvious WHY a row matched
+    const idx = query ? name.toLowerCase().indexOf(query) : -1;
+    if (idx >= 0) {
+      label.appendChild(document.createTextNode(name.slice(0, idx)));
+      const hit = document.createElement("mark");
+      hit.textContent = name.slice(idx, idx + query.length);
+      label.appendChild(hit);
+      label.appendChild(document.createTextNode(name.slice(idx + query.length)));
+    } else {
+      label.textContent = name;
+    }
+    row.appendChild(label);
+
+    const price = p.pricing[m];
+    if (price) {
+      const tag = document.createElement("span");
+      tag.className = "model-picker-price";
+      tag.textContent = `${fmtRate(price.prompt)} / ${fmtRate(price.completion)}`;
+      tag.title = "Live OpenRouter pricing, per 1M tokens (prompt / completion).";
+      row.appendChild(tag);
+    }
+
+    row.addEventListener("mousedown", (e) => {
+      e.preventDefault(); // keep focus so blur doesn't close before selection
+      selectPickerValue(pickerId, m);
+    });
+    menu.appendChild(row);
+  });
+
+  if (matches.length > shown.length) {
+    const more = document.createElement("div");
+    more.className = "model-picker-empty";
+    more.textContent = `+${matches.length - shown.length} more -- keep typing to narrow`;
+    menu.appendChild(more);
+  }
+
+  menu.style.display = "block";
+  input.setAttribute("aria-expanded", "true");
+}
+
+function closePickerMenu(pickerId) {
+  const p = pickerState[pickerId];
+  if (!p) return;
+  document.getElementById(p.menuId).style.display = "none";
+  document.getElementById(pickerId).setAttribute("aria-expanded", "false");
+  p.activeIndex = -1;
+}
+
+function selectPickerValue(pickerId, value) {
+  const input = document.getElementById(pickerId);
+  input.value = value;
+  closePickerMenu(pickerId);
+  input.dispatchEvent(new Event("change"));
+}
+
+const pickerState = {};
+
+function initModelPicker(pickerId, menuId) {
+  if (pickerState[pickerId]) return;
+  pickerState[pickerId] = { menuId, models: [], pricing: {}, matches: [], activeIndex: -1 };
+  const input = document.getElementById(pickerId);
+  if (!input) return;
+
+  input.addEventListener("input", () => {
+    pickerState[pickerId].activeIndex = -1;
+    renderPickerMenu(pickerId);
+  });
+  input.addEventListener("focus", () => renderPickerMenu(pickerId));
+  input.addEventListener("blur", () => setTimeout(() => closePickerMenu(pickerId), 120));
+  input.addEventListener("keydown", (e) => {
+    const p = pickerState[pickerId];
+    const open = document.getElementById(menuId).style.display !== "none";
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      if (!open) return renderPickerMenu(pickerId);
+      const delta = e.key === "ArrowDown" ? 1 : -1;
+      p.activeIndex = Math.max(0, Math.min(p.matches.length - 1, p.activeIndex + delta));
+      renderPickerMenu(pickerId);
+      document.querySelector(`#${menuId} .model-picker-item.active`)?.scrollIntoView({ block: "nearest" });
+    } else if (e.key === "Enter") {
+      if (open && p.activeIndex >= 0 && p.matches[p.activeIndex]) {
+        e.preventDefault();
+        selectPickerValue(pickerId, p.matches[p.activeIndex]);
+      }
+    } else if (e.key === "Escape") {
+      closePickerMenu(pickerId);
+    }
+  });
+}
+
+async function loadJudgeModelOptions(provider, pickerId = "run-judge-model", statusId = "frontier-judge-model-status") {
   const statusEl = document.getElementById(statusId);
-  datalist.innerHTML = "";
+  const p = pickerState[pickerId];
   statusEl.textContent = "Loading available models...";
   try {
-    const { models } = await api(`/api/settings/judge/models?provider=${encodeURIComponent(provider)}`);
-    models.forEach((m) => {
-      const opt = document.createElement("option");
-      opt.value = m;
-      datalist.appendChild(opt);
-    });
+    const data = await api(`/api/settings/judge/models?provider=${encodeURIComponent(provider)}`);
+    const models = data.models || [];
+    if (p) {
+      p.models = models;
+      p.pricing = data.pricing || {};
+    }
+    const priced = Object.keys(data.pricing || {}).length;
     statusEl.textContent = models.length
-      ? `${models.length} model(s) available from ${PROVIDER_LABELS[provider] || provider} -- start typing to see suggestions.`
+      ? `${models.length} model(s) from ${PROVIDER_LABELS[provider] || provider}` +
+        (priced ? " -- with live pricing per 1M tokens." : " -- click or type to search.")
       : `Could not fetch a live model list for ${PROVIDER_LABELS[provider] || provider} -- type the model id manually.`;
   } catch {
+    if (p) { p.models = []; p.pricing = {}; }
     statusEl.textContent = `Could not fetch a live model list for ${PROVIDER_LABELS[provider] || provider} -- type the model id manually.`;
   }
 }
+
+initModelPicker("run-judge-model", "run-judge-model-menu");
+initModelPicker("settings-judge-model", "settings-judge-model-menu");
 
 async function onJudgeProviderChange() {
   const provider = document.getElementById("run-judge-provider").value;
@@ -2689,12 +2844,27 @@ function buildFrontierJudgeSection(series, runs, getSuite) {
     tdJudge.textContent = judgedBy;
     row.appendChild(tdJudge);
 
+    // A judge that never answered (quota/auth/network) yields 0 passes, which
+    // would otherwise render as "0% -- this model scored zero". It was never
+    // graded at all, so say that instead of blaming the model.
+    const judgeFailed = suite.judge_infrastructure_failed;
+
     const tdScore = document.createElement("td");
-    tdScore.textContent = suite.avg_score != null ? fmtNum(suite.avg_score, 1) : "n/a";
+    if (judgeFailed) {
+      const warn = document.createElement("span");
+      warn.className = "truncated-badge";
+      warn.textContent = "⚠ judge unavailable";
+      warn.title = "Every judge call failed (e.g. quota exhausted or auth error), so this model was never graded. This is NOT a score of zero -- open the inspector for the exact error.";
+      tdScore.appendChild(warn);
+    } else {
+      tdScore.textContent = suite.avg_score != null ? fmtNum(suite.avg_score, 1) : "n/a";
+    }
     row.appendChild(tdScore);
 
     const tdPass = document.createElement("td");
-    tdPass.textContent = `${fmtPct(suite.pass_rate)} (${suite.pass_count}/${suite.total})`;
+    tdPass.textContent = judgeFailed
+      ? "not graded"
+      : `${fmtPct(suite.pass_rate)} (${suite.pass_count}/${suite.total})`;
     row.appendChild(tdPass);
 
     const tdExpand = document.createElement("td");
@@ -2744,7 +2914,7 @@ async function loadSettings() {
   document.getElementById("settings-judge-num-tasks").value = data.judge.num_tasks ?? "";
   document.getElementById("settings-judge-pass-threshold").value = data.judge.pass_threshold ?? "";
   state.settingsJudgeSaved = { provider: judgeProvider, model: data.judge.model || "" };
-  await loadJudgeModelOptions(judgeProvider, "settings-judge-model-options", "settings-judge-model-status");
+  await loadJudgeModelOptions(judgeProvider, "settings-judge-model", "settings-judge-model-status");
 
   renderKeysList(data.keys);
 }
@@ -2753,7 +2923,7 @@ document.getElementById("settings-judge-provider")?.addEventListener("change", a
   const provider = e.target.value;
   const modelInput = document.getElementById("settings-judge-model");
   modelInput.value = state.settingsJudgeSaved?.provider === provider ? (state.settingsJudgeSaved.model || "") : "";
-  await loadJudgeModelOptions(provider, "settings-judge-model-options", "settings-judge-model-status");
+  await loadJudgeModelOptions(provider, "settings-judge-model", "settings-judge-model-status");
 });
 
 function renderKeysList(keys) {

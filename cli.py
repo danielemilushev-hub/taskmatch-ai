@@ -104,7 +104,7 @@ def cmd_serve(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(prog="localbench")
+    parser = argparse.ArgumentParser(prog="taskmatch", description="TaskMatch AI — Task-driven evaluation for local LLMs.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     run_parser = subparsers.add_parser("run", help="run benchmark suites from the terminal")

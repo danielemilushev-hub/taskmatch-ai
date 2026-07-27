@@ -862,3 +862,62 @@ pre.output {
   margin: 0;
 }
 button.primary.danger { background: var(--critical); }
+
+/* ---- Searchable model picker (replaces <datalist>, which can't filter,
+       group, or show pricing across hundreds of models) ---- */
+.model-picker { position: relative; }
+.model-picker-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  z-index: 50;
+  padding: 4px;
+}
+.model-picker-group {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--text-muted);
+  font-weight: 700;
+  padding: 8px 8px 4px;
+  position: sticky;
+  top: -4px;
+  background: var(--surface);
+}
+.model-picker-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.model-picker-item:hover,
+.model-picker-item.active { background: var(--accent-soft); }
+.model-picker-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-picker-label mark {
+  background: transparent;
+  color: var(--accent);
+  font-weight: 700;
+}
+.model-picker-price {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.model-picker-empty {
+  padding: 10px 8px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}

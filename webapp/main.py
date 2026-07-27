@@ -29,7 +29,7 @@ from localbench.engine import RunContext
 from localbench.json_extract import extract_json
 from webapp.run_manager import RunManager
 
-app = FastAPI(title="localbench dashboard")
+app = FastAPI(title="TaskMatch AI dashboard")
 run_manager = RunManager(results_dir=load_config().get("output", {}).get("results_dir", "results"))
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -199,7 +199,13 @@ def update_settings_judge(payload: dict) -> dict:
 def judge_models(provider: str) -> dict:
     if provider not in settings_store.PROVIDER_ENV_VARS:
         raise HTTPException(400, f"unknown provider '{provider}'")
-    return {"models": settings_store.list_judge_models(provider)}
+    models = settings_store.list_judge_models(provider)
+    # OpenRouter publishes real per-token pricing; surfacing it inline in the
+    # picker means the cost of a judge choice is visible at the moment you
+    # make it. No other provider exposes this, so their picker simply has no
+    # price column rather than a guessed one.
+    pricing = settings_store.list_openrouter_pricing() if provider == "openrouter" else {}
+    return {"models": models, "pricing": pricing}
 
 
 @app.get("/api/settings/judge/history")

@@ -242,6 +242,34 @@ def list_judge_models(provider: str) -> list[str]:
     return []
 
 
+def list_openrouter_pricing() -> dict:
+    """{model_id: {"prompt": $/token, "completion": $/token}} for every
+    OpenRouter model, from one call to their public catalog. Lets the model
+    picker show a real per-model rate inline instead of making the user go
+    look it up. Empty dict on any failure -- never invented numbers."""
+    import requests
+
+    try:
+        resp = requests.get("https://openrouter.ai/api/v1/models", timeout=10)
+        resp.raise_for_status()
+        out = {}
+        for entry in resp.json().get("data", []):
+            mid = entry.get("id")
+            pricing = entry.get("pricing") or {}
+            if not mid or pricing.get("prompt") is None or pricing.get("completion") is None:
+                continue
+            try:
+                out[mid] = {
+                    "prompt": float(pricing["prompt"]),
+                    "completion": float(pricing["completion"]),
+                }
+            except (TypeError, ValueError):
+                continue
+        return out
+    except (requests.exceptions.RequestException, ValueError, KeyError):
+        return {}
+
+
 def get_openrouter_pricing(model: str) -> dict | None:
     """Real, live $/token pricing for a specific OpenRouter model id, from
     their public catalog (no key needed -- it's a marketplace, so pricing is

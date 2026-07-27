@@ -62,7 +62,7 @@ def _models_summary_block(run: dict) -> str:
 
 
 def render_markdown(run: dict) -> str:
-    lines = [f"# localbench report — `{run['run_id']}`", ""]
+    lines = [f"# TaskMatch AI report — `{run['run_id']}`", ""]
     lines.append(f"**Started:** {run.get('started_at', 'unknown')}")
     lines.append("")
     lines.append("## Models")
@@ -169,7 +169,7 @@ def render_markdown(run: dict) -> str:
 def render_comparison_markdown(runs: list[dict]) -> str:
     """Compare the same suite/model across multiple saved runs (e.g. different
     hardware, or re-runs over time)."""
-    lines = ["# localbench comparison", ""]
+    lines = ["# TaskMatch AI comparison", ""]
     lines.append("| Run | Started | Hardware | Model | Suite | Pass Rate | Avg Latency (s) | Tok/s |")
     lines.append("|---|---|---|---|---|---|---|---|")
     for run in runs:
@@ -206,7 +206,7 @@ def render_html(run: dict) -> str:
     """HTML version of the same report, used both for on-screen viewing and as
     the source document for PDF export (see render_pdf)."""
     esc = html.escape
-    parts = [_PDF_STYLE, f"<h1>localbench report &mdash; {esc(run['run_id'])}</h1>"]
+    parts = [_PDF_STYLE, f"<h1>TaskMatch AI report &mdash; {esc(run['run_id'])}</h1>"]
     parts.append(f"<div class='meta'>Started: {esc(str(run.get('started_at', 'unknown')))}</div>")
 
     parts.append("<h2>Models</h2>")
