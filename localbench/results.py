@@ -4,7 +4,45 @@ one self-contained, JSON-serializable object."""
 
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass, field
+
+# 95% two-sided normal quantile, for the Wilson score interval below.
+_Z_95 = 1.959963984540054
+
+
+def wilson_interval(passes: int, total: int, z: float = _Z_95) -> tuple[float, float] | None:
+    """95% confidence interval for a pass rate, via the Wilson score method.
+
+    A pass rate measured over a handful of problems is an estimate, not a
+    fact, and reporting it bare overstates what was measured: 5/5 on a
+    5-problem suite is statistically consistent with a model that fails 43%
+    of the time. Wilson is used rather than the textbook normal
+    approximation because it stays sensible at small N and at rates near 0
+    or 1 -- exactly this tool's regime -- where the normal approximation
+    produces intervals running past 0% or 100%.
+    """
+    if total <= 0:
+        return None
+    p = passes / total
+    denom = 1 + z * z / total
+    centre = p + z * z / (2 * total)
+    margin = z * math.sqrt(p * (1 - p) / total + z * z / (4 * total * total))
+    return (max(0.0, (centre - margin) / denom), min(1.0, (centre + margin) / denom))
+
+
+def rates_distinguishable(passes_a: int, total_a: int, passes_b: int, total_b: int) -> bool:
+    """Whether two pass rates differ by more than measurement noise.
+
+    Non-overlapping 95% intervals is a deliberately conservative test: it
+    implies significance, though the converse doesn't strictly hold. The
+    asymmetry is the point -- the expensive error here is telling someone
+    model A beats model B when the data cannot support it."""
+    ci_a = wilson_interval(passes_a, total_a)
+    ci_b = wilson_interval(passes_b, total_b)
+    if ci_a is None or ci_b is None:
+        return False
+    return ci_a[0] > ci_b[1] or ci_b[0] > ci_a[1]
 
 
 @dataclass
@@ -72,6 +110,11 @@ class SuiteRunResult:
     @property
     def pass_rate(self) -> float | None:
         return self.pass_count / self.total if self.total else None
+
+    @property
+    def pass_rate_ci(self) -> tuple[float, float] | None:
+        """95% CI on this suite's pass rate -- the honest width of the estimate."""
+        return wilson_interval(self.pass_count, self.total)
 
     @property
     def avg_latency_seconds(self) -> float | None:
@@ -147,6 +190,7 @@ class SuiteRunResult:
             "total": self.total,
             "pass_count": self.pass_count,
             "pass_rate": self.pass_rate,
+            "pass_rate_ci": list(self.pass_rate_ci) if self.pass_rate_ci else None,
             "avg_latency_seconds": self.avg_latency_seconds,
             "avg_ttft_seconds": self.avg_ttft_seconds,
             "avg_tokens_per_sec": self.avg_tokens_per_sec,

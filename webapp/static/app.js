@@ -943,6 +943,51 @@ document.getElementById("confirm-continue").addEventListener("click", async () =
   await api(`/api/run/${state.activeRunId}/continue`, { method: "POST" });
 });
 
+
+// ---------- Statistical honesty ----------
+// A pass rate over a handful of problems is an estimate, not a fact: 5/5 is
+// consistent with a model that fails 43% of the time. Reporting a bare
+// percentage claims more precision than was measured. Mirrors
+// localbench/results.py::wilson_interval so UI and reports agree.
+const _Z95 = 1.959963984540054;
+
+function wilsonInterval(passes, total, z = _Z95) {
+  if (!total || total <= 0) return null;
+  const p = passes / total;
+  const denom = 1 + (z * z) / total;
+  const centre = p + (z * z) / (2 * total);
+  const margin = z * Math.sqrt((p * (1 - p)) / total + (z * z) / (4 * total * total));
+  return [Math.max(0, (centre - margin) / denom), Math.min(1, (centre + margin) / denom)];
+}
+
+// Conservative by design: non-overlapping 95% intervals implies a real
+// difference; overlap does not prove equality. The costly error is naming a
+// winner the data cannot support.
+function ratesDistinguishable(pa, ta, pb, tb) {
+  const a = wilsonInterval(pa, ta);
+  const b = wilsonInterval(pb, tb);
+  if (!a || !b) return false;
+  return a[0] > b[1] || b[0] > a[1];
+}
+
+function ciLabel(suite) {
+  if (!suite) return "";
+  const ci = suite.pass_rate_ci || wilsonInterval(suite.pass_count, suite.total);
+  if (!ci) return "";
+  return Math.round(ci[0] * 100) + "-" + Math.round(ci[1] * 100) + "%";
+}
+
+function ciTitle(suite) {
+  if (!suite) return "";
+  const ci = suite.pass_rate_ci || wilsonInterval(suite.pass_count, suite.total);
+  if (!ci) return "";
+  return (
+    "95% confidence interval: " + Math.round(ci[0] * 100) + "-" + Math.round(ci[1] * 100) + "%. " +
+    "Measured over only " + suite.total + " problem(s), so the true pass rate is likely " +
+    "somewhere in this range. Treat gaps smaller than this width as noise, not a result."
+  );
+}
+
 // ---------- Live Hardware Monitor ----------
 // minSpan is the smallest y-range a chart will zoom into, in that metric's own
 // unit -- it stops an idle metric's jitter from being magnified to full height.
@@ -1370,6 +1415,7 @@ function renderRunDetail(data, suiteFilterVal, modelFilterVal) {
           <span class="pill ${pillClass} clickable" data-run-id="${escapeHtml(data.run_id)}" data-model-name="${escapeHtml(modelName)}" data-suite-name="${escapeHtml(suiteName)}" title="Click to view detailed prompt/response/failure breakdown">
             <span class="icon">${icon}</span>${fmtPct(suite.pass_rate)} (${suite.pass_count}/${suite.total})
           </span>${truncatedBadge}
+          <div class="ci-note" title="${escapeHtml(ciTitle(suite))}">95% CI ${ciLabel(suite)}</div>
         </td>
         <td><span class="model-badge" style="background:var(--surface);">🕒 ${fmtNum(suite.avg_latency_seconds)}s</span></td>
         <td><span class="model-badge" style="background:var(--surface);">⏱️ ${fmtNum(suite.avg_ttft_seconds)}s</span></td>
@@ -2513,6 +2559,11 @@ function buildFullComparisonTable(series, categories, getSuite, runs) {
     pill.appendChild(icon);
     pill.appendChild(document.createTextNode(`${fmtPct(r.passRate)} (${r.passCount}/${r.total})`));
     tdPass.appendChild(pill);
+    const ciEl = document.createElement("div");
+    ciEl.className = "ci-note";
+    ciEl.textContent = "95% CI " + ciLabel(r.suiteData);
+    ciEl.title = ciTitle(r.suiteData);
+    tdPass.appendChild(ciEl);
     const truncatedCount = (r.suiteData.problems || []).filter((p) => p.truncated).length;
     if (truncatedCount > 0) {
       const truncBadge = document.createElement("span");
@@ -2919,20 +2970,24 @@ async function renderCompare() {
     if (allSeries.length > 0) {
       let topAccItem = null;
       let topSpeedItem = null;
+      const allItems = [];
 
       allSeries.forEach((s) => {
-        let passSum = 0, speedSum = 0, count = 0;
+        let passSum = 0, speedSum = 0, count = 0, passes = 0, problems = 0;
         categories.forEach((cat) => {
           const suite = getSuite(s, cat);
           if (suite) {
             passSum += suite.pass_rate || 0;
             speedSum += suite.avg_tokens_per_sec || 0;
+            passes += suite.pass_count || 0;
+            problems += suite.total || 0;
             count++;
           }
         });
         const meanPass = count ? passSum / count : 0;
         const meanSpeed = count ? speedSum / count : 0;
-        const itemData = { modelName: s.modelName, meanPass, meanSpeed, runId: s.runId };
+        const itemData = { modelName: s.modelName, meanPass, meanSpeed, runId: s.runId, passes, problems };
+        allItems.push(itemData);
 
         if (!topAccItem || itemData.meanPass > topAccItem.meanPass) topAccItem = itemData;
         if (!topSpeedItem || itemData.meanSpeed > topSpeedItem.meanSpeed) topSpeedItem = itemData;
@@ -2952,7 +3007,34 @@ async function renderCompare() {
 
       const verdictBanner = document.createElement("div");
       verdictBanner.className = "verdict-banner";
-      verdictBanner.textContent = `🏆 Highest mean pass rate: ${topAccItem.modelName} — ${Math.round(topAccItem.meanPass * 100)}%${vsBaselineStr}. Fastest: ${topSpeedItem.modelName} — ${fmtNum(topSpeedItem.meanSpeed, 0)} tok/s.`;
+      // State a lead only when the data supports it. Over ~60 problems a
+      // several-point gap has overlapping 95% intervals, so ranking on the raw
+      // mean alone would present measurement noise as a finding.
+      const rivals = allItems.filter(
+        (it) => it !== topAccItem &&
+                !ratesDistinguishable(topAccItem.passes, topAccItem.problems, it.passes, it.problems)
+      );
+      const topCi = wilsonInterval(topAccItem.passes, topAccItem.problems);
+      const ciStr = topCi ? ` [95% CI ${Math.round(topCi[0] * 100)}-${Math.round(topCi[1] * 100)}%]` : "";
+      const speedStr = `Fastest: ${topSpeedItem.modelName} — ${fmtNum(topSpeedItem.meanSpeed, 0)} tok/s.`;
+
+      if (rivals.length > 0) {
+        verdictBanner.textContent =
+          `No clear accuracy winner: ${topAccItem.modelName} leads at ` +
+          `${Math.round(topAccItem.meanPass * 100)}%${ciStr}, but ` +
+          `${rivals.map((r) => r.modelName).join(", ")} ` +
+          `${rivals.length === 1 ? "is" : "are"} within measurement error over ` +
+          `${topAccItem.problems} problems. ${speedStr}`;
+        verdictBanner.title =
+          "Their 95% confidence intervals overlap, so this run cannot separate them. " +
+          "Raise num_problems in config.yaml to narrow the intervals.";
+      } else {
+        verdictBanner.textContent =
+          `🏆 Highest mean pass rate: ${topAccItem.modelName} — ` +
+          `${Math.round(topAccItem.meanPass * 100)}%${ciStr}${vsBaselineStr}. ${speedStr}`;
+        verdictBanner.title =
+          `This lead is larger than measurement error over ${topAccItem.problems} problems.`;
+      }
       output.appendChild(verdictBanner);
     }
 

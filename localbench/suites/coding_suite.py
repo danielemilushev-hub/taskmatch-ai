@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Callable
 
 from ..data.coding_problems import PROBLEMS
+from ..data.generated_coding_problems import generate_problems
 from ..engine import RunContext
 from ..results import ProblemResult
 
@@ -211,8 +212,16 @@ def run(
     max_tokens: int | None = None,
     call_timeout_seconds: float | None = None,
     on_progress: Callable[[int, int, str, bool], None] | None = None,
+    generated: bool = True,
+    num_problems: int = 12,
+    seed: int = 42,
 ) -> list[ProblemResult]:
-    problems = problems if problems is not None else PROBLEMS
+    # Generated problems by default. The fixed set (factorial, fibonacci,
+    # is_prime, ...) is in every training corpus, so passing it can be pure
+    # recall -- it measures memorisation, not coding. Set `generated: false`
+    # in config to fall back to the classic set for comparison.
+    if problems is None:
+        problems = generate_problems(num_problems, seed) if generated else PROBLEMS
     results: list[ProblemResult] = []
     call_kwargs = {}
     if max_tokens is not None:

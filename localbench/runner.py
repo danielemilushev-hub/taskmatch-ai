@@ -206,6 +206,9 @@ def run_benchmark(
                 problems = coding_suite.run(
                     ctx,
                     timeout_seconds=coding_cfg.get("timeout_seconds", 10),
+                    generated=coding_cfg.get("generated", True),
+                    num_problems=coding_cfg.get("num_problems", 12),
+                    seed=coding_cfg.get("seed", 42),
                     max_tokens=coding_cfg.get("max_tokens"),
                     call_timeout_seconds=coding_cfg.get("call_timeout_seconds"),
                     on_progress=_make_progress_logger(log, model_name, "coding"),

@@ -1141,3 +1141,14 @@ nav.tabs button.active {
   margin-top: 2px;
   font-variant-numeric: tabular-nums;
 }
+
+/* ---- Confidence interval annotation ---- */
+.ci-note {
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-top: 3px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: help;
+}
+.verdict-tie { color: var(--text-muted); font-style: italic; }

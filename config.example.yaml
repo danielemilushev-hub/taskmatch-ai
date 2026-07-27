@@ -56,20 +56,26 @@ suites:
   coding:
     enabled: true
     timeout_seconds: 10
+    # Procedurally generated from `seed` so the exact tasks aren't in any
+    # training corpus. Set generated: false for the classic fixed set
+    # (factorial/fibonacci/is_prime), which models may pass from memory.
+    generated: true
+    num_problems: 12
+    seed: 42
     max_tokens: 2048
   logic_math:
     enabled: true
-    num_problems: 20
+    num_problems: 30
     seed: 42
     max_tokens: 2048
   instruction_following:
     enabled: true
-    num_problems: 16
+    num_problems: 24
     seed: 42
     max_tokens: 2560
   pattern_reasoning:
     enabled: true
-    num_problems: 10
+    num_problems: 20
     seed: 42
     max_tokens: 3072
     # this suite makes the model reason much longer than the others (a 120s
@@ -78,7 +84,7 @@ suites:
     call_timeout_seconds: 240
   long_context:
     enabled: true
-    num_problems: 4
+    num_problems: 8
     seed: 42
     window_lines: 1000
     # bug_locator tasks make this model reason much longer than simple
