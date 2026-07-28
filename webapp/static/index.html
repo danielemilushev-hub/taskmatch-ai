@@ -225,6 +225,11 @@
             </div>
           </div>
 
+          <label class="row" style="margin-top:12px; align-items:center; gap:6px; cursor:pointer; width:fit-content;" title="Abort the response early if it looks like a repetition loop (re-deriving the same content instead of converging), instead of waiting out the full Max Tokens budget above.">
+            <input type="checkbox" id="pg-detect-loops">
+            <span class="field" style="margin:0;">Detect loops (stop early instead of waiting for Max Tokens)</span>
+          </label>
+
           <label class="field" style="margin-top:12px;">Optional JSON Schema <span class="muted">(validates JSON output)</span></label>
           <textarea id="pg-schema" rows="3" placeholder='{"type": "object", "properties": {"result": {"type": "string"}}}'></textarea>
 

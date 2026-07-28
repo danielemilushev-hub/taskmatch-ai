@@ -507,6 +507,8 @@ def run_custom(payload: dict) -> dict:
     call_kwargs = {}
     if temperature is not None:
         call_kwargs["temperature"] = float(temperature)
+    if payload.get("detect_loops"):
+        call_kwargs["detect_loops"] = True
 
     chat = ctx.call(messages, **call_kwargs)
 
@@ -516,6 +518,7 @@ def run_custom(payload: dict) -> dict:
         "reasoning_content": chat.reasoning_content,
         "error": chat.error,
         "truncated": chat.truncated,
+        "loop_detected": chat.loop_detected,
         "latency_seconds": chat.latency_seconds,
         "ttft_seconds": chat.ttft_seconds,
         "tokens_per_sec": chat.tokens_per_sec,

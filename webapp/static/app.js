@@ -1483,6 +1483,14 @@ function renderRunDetail(data, suiteFilterVal, modelFilterVal) {
       const truncatedBadge = truncatedCount > 0
         ? `<span class="truncated-badge" title="${truncatedCount} of ${suite.total} failure(s) hit the max_tokens limit before finishing -- counted as failures, but may reflect too small a token budget rather than incorrect reasoning. Click the pill to inspect.">&#9888; ${truncatedCount} truncated</span>`
         : "";
+      const loopCount = (suite.problems || []).filter((p) => p.loop_detected).length;
+      const loopBadge = loopCount > 0
+        ? `<span class="loop-badge" title="${loopCount} of ${suite.total} failure(s) were aborted early after detecting a repetition loop (re-deriving the same content instead of converging), rather than run to a wrong answer or truncation. Click the pill to inspect.">&#128257; ${loopCount} looped</span>`
+        : "";
+      const earlyExitCount = (suite.problems || []).filter((p) => p.early_exit).length;
+      const earlyExitBadge = earlyExitCount > 0
+        ? `<span class="early-exit-badge" title="${earlyExitCount} of ${suite.total} solved correctly, but the model never stopped generating on its own -- an already-verified answer was found in the stream and counted as a pass, cutting generation off there instead of waiting out max_tokens. Click the pill to inspect.">&#9989; ${earlyExitCount} solved, didn't stop</span>`
+        : "";
       const vramStr = vramTotal == null ? '<span class="muted" style="opacity:0.5;">—</span>' : `<span class="model-badge" style="background:rgba(139, 92, 246, 0.12); color:#c084fc; border:1px solid rgba(139, 92, 246, 0.3);">🟣 ${fmtNum(vramTotal / 1024, 2)} GB</span>`;
       const vramDeltaStr = vram == null ? '<span class="muted" style="opacity:0.5;">—</span>' : `<span class="model-badge" style="background:rgba(0, 210, 255, 0.1); color:var(--accent); border:1px solid rgba(0, 210, 255, 0.3);">🔵 +${fmtNum(vram, 0)} MB</span>`;
       const gpuStr = gpuUtil == null ? '<span class="muted" style="opacity:0.5;">—</span>' : `<span class="model-badge" style="background:rgba(245, 158, 11, 0.12); color:#f59e0b; border:1px solid rgba(245, 158, 11, 0.3);">⚡ ${fmtNum(gpuUtil, 0)}%</span>`;
@@ -1493,7 +1501,7 @@ function renderRunDetail(data, suiteFilterVal, modelFilterVal) {
         <td>
           <span class="pill ${pillClass} clickable" data-run-id="${escapeHtml(data.run_id)}" data-model-name="${escapeHtml(modelName)}" data-suite-name="${escapeHtml(suiteName)}" title="Click to view detailed prompt/response/failure breakdown">
             <span class="icon">${icon}</span>${fmtPct(suite.pass_rate)} (${suite.pass_count}/${suite.total})
-          </span>${truncatedBadge}
+          </span>${truncatedBadge}${loopBadge}${earlyExitBadge}
           <div class="ci-note" title="${escapeHtml(ciTitle(suite))}">95% CI ${ciLabel(suite)}</div>
         </td>
         <td><span class="model-badge" style="background:var(--surface);">🕒 ${fmtNum(suite.avg_latency_seconds)}s</span></td>
@@ -1590,6 +1598,8 @@ function showInspectorModal(runData, modelName, suiteName, filterState = "all") 
       <span>TTFT: ${fmtNum(p.ttft_seconds)}s</span>
       <span>Tokens/sec: ${fmtNum(p.tokens_per_sec)}</span>
       ${p.truncated ? '<span style="color:var(--serious)">TRUNCATED</span>' : ""}
+      ${p.loop_detected ? '<span style="color:var(--critical)">LOOP DETECTED</span>' : ""}
+      ${p.early_exit ? '<span style="color:var(--good)" title="A correct, already-verified answer was found in the stream, but the model never stopped talking on its own -- generation was cut off there instead of waiting out max_tokens.">SOLVED, DID NOT TERMINATE</span>' : ""}
     `;
     card.appendChild(meta);
 
@@ -1777,6 +1787,7 @@ document.getElementById("pg-run").addEventListener("click", async () => {
   const temperature = parseFloat(document.getElementById("pg-temperature").value);
   const maxTokens = parseInt(document.getElementById("pg-max-tokens").value, 10);
   const schemaText = document.getElementById("pg-schema").value.trim();
+  const detectLoops = document.getElementById("pg-detect-loops")?.checked || false;
 
   if (!prompt) {
     status.textContent = "please enter a prompt";
@@ -1804,6 +1815,7 @@ document.getElementById("pg-run").addEventListener("click", async () => {
         temperature,
         max_tokens: maxTokens,
         schema,
+        detect_loops: detectLoops,
       }),
     });
     status.textContent = data.success ? "done" : "call failed";
@@ -1843,6 +1855,7 @@ document.getElementById("pg-run").addEventListener("click", async () => {
       <span class="model-badge" style="background:var(--surface);">⚡ ${fmtNum(data.tokens_per_sec)} tok/s</span>
       <span class="model-badge" style="background:var(--surface);">⏱️ ${fmtNum(data.ttft_seconds)}s TTFT</span>
       ${data.truncated ? '<span class="model-badge" style="background:var(--critical-soft); color:var(--critical);">⚠️ Truncated</span>' : ""}
+      ${data.loop_detected ? '<span class="model-badge" style="background:var(--critical-soft); color:var(--critical);">🔁 Loop detected</span>' : ""}
     `;
 
     const schemaBadge = document.getElementById("pg-schema-badge");
@@ -2651,6 +2664,22 @@ function buildFullComparisonTable(series, categories, getSuite, runs) {
       truncBadge.textContent = `⚠ ${truncatedCount} truncated`;
       tdPass.appendChild(truncBadge);
     }
+    const loopCount = (r.suiteData.problems || []).filter((p) => p.loop_detected).length;
+    if (loopCount > 0) {
+      const loopBadgeEl = document.createElement("span");
+      loopBadgeEl.className = "loop-badge";
+      loopBadgeEl.title = `${loopCount} of ${r.total} failure(s) were aborted early after detecting a repetition loop, rather than run to a wrong answer or truncation. Click the pill to inspect.`;
+      loopBadgeEl.textContent = `\u{1F501} ${loopCount} looped`;
+      tdPass.appendChild(loopBadgeEl);
+    }
+    const earlyExitCount = (r.suiteData.problems || []).filter((p) => p.early_exit).length;
+    if (earlyExitCount > 0) {
+      const earlyExitBadgeEl = document.createElement("span");
+      earlyExitBadgeEl.className = "early-exit-badge";
+      earlyExitBadgeEl.title = `${earlyExitCount} of ${r.total} solved correctly, but the model never stopped generating on its own. Click the pill to inspect.`;
+      earlyExitBadgeEl.textContent = `✅ ${earlyExitCount} solved, didn't stop`;
+      tdPass.appendChild(earlyExitBadgeEl);
+    }
     row.appendChild(tdPass);
 
     const tdLatency = document.createElement("td");
@@ -3190,6 +3219,7 @@ function buildPerSuiteBreakdown(series, categories, getSuite) {
     ["pass", "Passed"],
     ["fail", "Failed"],
     ["trunc", "Failed (hit token limit)"],
+    ["loop", "Failed (repetition loop detected)"],
     ["absent", "Not run"],
   ].forEach(([cls, label]) => {
     const item = document.createElement("span");
@@ -3263,6 +3293,9 @@ function buildPerSuiteBreakdown(series, categories, getSuite) {
           if (p.passed) {
             cls = "pass";
             tip = `${pid}: passed`;
+          } else if (p.loop_detected) {
+            cls = "loop";
+            tip = `${pid}: aborted early -- repetition loop detected -- ${p.error || ""}`;
           } else if (p.truncated) {
             cls = "trunc";
             tip = `${pid}: hit the token limit before finishing -- ${p.error || ""}`;

@@ -51,6 +51,18 @@ models:
 # pattern_reasoning problem (0/10) and several others -- these overrides
 # were raised in response to that real result, not guessed in advance.
 suites:
+  # Token budgets below are tiered on real evidence, not guessed: every
+  # legitimate (non-looping) answer observed across live testing finished
+  # under ~3,200 tokens, but coding/pattern_reasoning specifically also
+  # showed genuine, correct, non-repetitive reasoning running past that --
+  # one confirmed pass took 6,466 tokens. So the "simple" suites get 4096
+  # (headroom costs nothing for a fast-converging answer -- max_tokens is a
+  # ceiling, not a wait -- see engine.py's streaming loop, which ends the
+  # instant the model emits finish_reason=stop) and the two suites that
+  # actually need deeper reasoning get 6144. This deliberately accepts that
+  # a rare, very-slow-but-correct answer above 6144 could get cut off --
+  # bounding worst-case wait time was judged more important than that edge
+  # case, given nothing users will realistically wait hours for a benchmark.
   json_schema:
     enabled: true
     # Generated from `seed` so schemas are novel each seed, and N is high
@@ -59,7 +71,8 @@ suites:
     generated: true
     num_problems: 20
     seed: 42
-    max_tokens: 2048
+    max_tokens: 4096
+    call_timeout_seconds: 200
   coding:
     enabled: true
     timeout_seconds: 10
@@ -69,26 +82,54 @@ suites:
     generated: true
     num_problems: 12
     seed: 42
-    max_tokens: 2048
+    max_tokens: 6144
+    call_timeout_seconds: 400
+    # See pattern_reasoning's detect_loops comment below -- this suite showed
+    # the identical bimodal pattern live: filter_reduce/dict_aggregate always
+    # finished in a few hundred tokens, but every transform_join/
+    # running_sequence problem hit exactly the max_tokens ceiling.
+    detect_loops: true
+    # A live transcript showed exactly why: the model found fully correct
+    # code within the first few hundred tokens, then never stopped --
+    # re-verifying it against new self-invented examples indefinitely,
+    # burning the whole budget on an answer it already had right. This
+    # checks (by actually running the candidate against the real tests, not
+    # a heuristic) whether a passing answer already exists in the stream,
+    # and stops there instead of waiting out max_tokens. Correctness-
+    # grounded rather than a guess, so it's safe to default on.
+    early_exit_check: true
   logic_math:
     enabled: true
     num_problems: 30
     seed: 42
-    max_tokens: 2048
+    max_tokens: 4096
+    call_timeout_seconds: 200
   instruction_following:
     enabled: true
     num_problems: 24
     seed: 42
-    max_tokens: 2560
+    max_tokens: 4096
+    call_timeout_seconds: 200
   pattern_reasoning:
     enabled: true
     num_problems: 20
     seed: 42
-    max_tokens: 4096
+    max_tokens: 6144
     # this suite makes the model reason much longer than the others (a 120s
     # global timeout cut off in-progress generations even after raising
-    # max_tokens) -- confirmed fixed at 240s against gemma live.
-    call_timeout_seconds: 360
+    # max_tokens) -- confirmed fixed at 240s against gemma live. ~31 tok/s on
+    # this suite -> ~198s to generate 6144 tokens, so this keeps real margin.
+    call_timeout_seconds: 300
+    # A live diagnostic proved raising max_tokens alone doesn't fix stalls:
+    # at 20,000 tokens the model still hit finish_reason=length with zero
+    # characters of actual answer, all of it spent re-deriving the same
+    # example grids on repeat. This detects that pattern from the streamed
+    # response and aborts early instead of waiting out max_tokens -- see
+    # engine.py's _has_repetition and ChatResult.loop_detected. Tuned to
+    # require the repeat to be dense (close together) rather than merely
+    # present anywhere in a long response, after a looser first pass
+    # false-positived on legitimate multi-hypothesis reasoning.
+    detect_loops: true
   long_context:
     enabled: true
     num_problems: 8
@@ -98,7 +139,7 @@ suites:
     # needle retrieval (observed a 180s timeout on an 800-line excerpt) --
     # given generous headroom in response to that real result.
     timeout_seconds: 300
-    max_tokens: 2048
+    max_tokens: 4096
     # Optional: path to a real source file on THIS machine to use as the
     # excerpt (more realistic than the bundled synthetic fallback). Left
     # null by default so config.yaml stays generic and safe to commit --

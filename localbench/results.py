@@ -58,6 +58,17 @@ class ProblemResult:
     response_content: str | None = None
     reasoning_content: str | None = None
     truncated: bool = False
+    # Set when generation was proactively aborted mid-stream on suspicion of
+    # a repetition loop (see engine.ChatResult.loop_detected) -- distinct
+    # from `truncated`, which means the token budget ran out normally.
+    loop_detected: bool = False
+    # Set when `passed` is True but the model never stopped generating on
+    # its own -- a valid, already-graded-correct answer was found in the
+    # stream and generation was cut off there instead of waiting for the
+    # model to terminate (see engine.ChatResult.early_exit). Correctness is
+    # real, but the model has a genuine practical weakness worth surfacing:
+    # it doesn't know when it's done.
+    early_exit: bool = False
     # Only set by the frontier-graded suite: a 0-10 score alongside pass/fail
     # (score >= threshold), since that suite's grading is a judged quality
     # signal, not a deterministic exact-match result like the other suites.

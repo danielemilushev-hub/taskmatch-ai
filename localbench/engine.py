@@ -5,9 +5,34 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 import requests
+
+
+def _has_repetition(text: str, window_chars: int, phrase_len: int, min_repeats: int) -> bool:
+    """True if some exact substring of length `phrase_len` recurs at least
+    `min_repeats` times within the trailing `window_chars` of `text`.
+
+    Only the most recent window is checked (not the whole response so far)
+    so a loop is caught shortly after it starts, not diluted by everything
+    generated before it. The exact-match requirement is deliberate: ordinary
+    wordy-but-non-looping prose essentially never repeats a 40+ character
+    span verbatim, but a model re-deriving the same example grid on every
+    "wait, let me re-check" pass does -- that's the actual pattern observed
+    in a live gemma-4-12b-qat transcript that this was tuned against.
+    """
+    window = text[-window_chars:]
+    if len(window) < phrase_len * min_repeats:
+        return False
+    counts: dict[str, int] = {}
+    for i in range(len(window) - phrase_len + 1):
+        phrase = window[i : i + phrase_len]
+        count = counts.get(phrase, 0) + 1
+        if count >= min_repeats:
+            return True
+        counts[phrase] = count
+    return False
 
 
 @dataclass
@@ -23,6 +48,26 @@ class ChatResult:
     completion_tokens: int | None = None
     total_tokens: int | None = None
     requested_max_tokens: int | None = None
+    # True if generation was proactively aborted mid-stream because it looked
+    # like a repetition loop, rather than run to completion or to max_tokens.
+    # Distinct from `truncated`: truncated means the token budget ran out;
+    # loop_detected means we chose to stop early, before that budget was hit,
+    # because a live diagnostic against gemma-4-12b-qat showed some
+    # pattern_reasoning problems never converge -- 20,000 completion tokens
+    # (2.4x the suite's normal cap, well inside the model's context window)
+    # still ended in finish_reason=length with zero characters of actual
+    # answer content, all of it spent re-deriving the same examples on
+    # repeat. No token budget fixes that; only recognizing the loop does.
+    loop_detected: bool = False
+    # True if generation was proactively stopped because a caller-supplied
+    # `early_exit_check` found an already-valid, already-graded-correct
+    # answer in the stream. A live gemma transcript showed the model finding
+    # correct code in the first few hundred tokens, then never stopping --
+    # re-verifying it against new self-invented test cases indefinitely.
+    # That answer was real; grading the response as a failure because the
+    # model wouldn't stop talking would be inaccurate. See coding_suite.py's
+    # early-exit checker for how the "already correct" judgment is made.
+    early_exit: bool = False
     raw: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -86,6 +131,28 @@ def chat_completion(
     temperature: float = 0.2,
     max_tokens: int = 1024,
     extra_params: dict[str, Any] | None = None,
+    detect_loops: bool = False,
+    # Tuned against live results, not guessed: a looser first pass (4000/40/3
+    # -- match anywhere in a wide window) correctly caught genuine stalls but
+    # also flagged legitimate, verbose multi-hypothesis reasoning that
+    # re-quotes the same example grid at widely separated points while
+    # working through different theories. Requiring the repeat to be DENSE
+    # (close together, in a narrow trailing window) rather than merely
+    # present anywhere in a long response eliminated that false positive in
+    # a live A/B (same problem, same model) while still catching two
+    # confirmed genuine non-convergent generations.
+    loop_window_chars: int = 1200,
+    loop_phrase_len: int = 50,
+    loop_min_repeats: int = 4,
+    loop_min_chars: int = 1500,
+    # Suite-supplied, suite-graded check: given the combined reasoning+content
+    # text so far, return True if it already contains a correct, verified
+    # answer. Unlike loop detection (a fuzzy text-repetition heuristic), this
+    # is grounded in the suite's own real grading logic (e.g. actually
+    # running candidate code against test cases) -- so it's safe to trust
+    # without the false-positive risk that came with repetition matching.
+    early_exit_check: Callable[[str], bool] | None = None,
+    early_exit_check_interval_chars: int = 150,
 ) -> ChatResult:
     """POST to {base_url}/chat/completions (streamed) and return a ChatResult.
 
@@ -152,6 +219,11 @@ def chat_completion(
     usage: dict = {}
     ttft: float | None = None
     got_any_chunk = False
+    token_estimate = 0
+    loop_detected = False
+    early_exit = False
+    chars_at_last_loop_check = 0
+    chars_at_last_early_exit_check = 0
 
     try:
         for line in resp.iter_lines(decode_unicode=True):
@@ -175,12 +247,49 @@ def chat_completion(
                     ttft = time.perf_counter() - start
                 if piece_content:
                     content_parts.append(piece_content)
+                    token_estimate += 1
                 if piece_reasoning:
                     reasoning_parts.append(piece_reasoning)
+                    token_estimate += 1
                 if choices[0].get("finish_reason"):
                     finish_reason = choices[0]["finish_reason"]
             if chunk.get("usage"):
                 usage = chunk["usage"]
+
+            if early_exit_check is not None:
+                combined_chars = sum(len(p) for p in reasoning_parts) + sum(
+                    len(p) for p in content_parts
+                )
+                if combined_chars - chars_at_last_early_exit_check >= early_exit_check_interval_chars:
+                    chars_at_last_early_exit_check = combined_chars
+                    combined_text = "".join(reasoning_parts) + "".join(content_parts)
+                    if early_exit_check(combined_text):
+                        early_exit = True
+                        finish_reason = "early_exit"
+                        resp.close()
+                        break
+
+            if detect_loops:
+                # Reasoning-heavy models loop in the hidden reasoning channel,
+                # not the final answer, so both are checked combined. Only
+                # re-scan once enough new text has arrived to be worth the
+                # pass -- see _has_repetition for why this rarely false-positives.
+                combined_chars = sum(len(p) for p in reasoning_parts) + sum(
+                    len(p) for p in content_parts
+                )
+                if (
+                    combined_chars >= loop_min_chars
+                    and combined_chars - chars_at_last_loop_check >= loop_window_chars // 16
+                ):
+                    chars_at_last_loop_check = combined_chars
+                    combined_text = "".join(reasoning_parts) + "".join(content_parts)
+                    if _has_repetition(
+                        combined_text, loop_window_chars, loop_phrase_len, loop_min_repeats
+                    ):
+                        loop_detected = True
+                        finish_reason = "loop_detected"
+                        resp.close()
+                        break
     except requests.exceptions.RequestException as e:
         return ChatResult(
             success=False,
@@ -197,6 +306,14 @@ def chat_completion(
             latency_seconds=latency,
         )
 
+    completion_tokens = usage.get("completion_tokens")
+    if completion_tokens is None:
+        # Aborting early (loop detection) skips the final usage-bearing
+        # chunk entirely, and some servers omit usage outright -- fall back
+        # to counting streamed delta events, which is a token each for these
+        # OpenAI-compatible APIs.
+        completion_tokens = token_estimate
+
     return ChatResult(
         success=True,
         content="".join(content_parts),
@@ -205,8 +322,10 @@ def chat_completion(
         latency_seconds=latency,
         ttft_seconds=ttft,
         prompt_tokens=usage.get("prompt_tokens"),
-        completion_tokens=usage.get("completion_tokens"),
+        completion_tokens=completion_tokens,
         total_tokens=usage.get("total_tokens"),
         requested_max_tokens=max_tokens,
+        loop_detected=loop_detected,
+        early_exit=early_exit,
         raw={"finish_reason": finish_reason, "usage": usage},
     )

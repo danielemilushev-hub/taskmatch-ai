@@ -509,6 +509,8 @@ pre.output {
 .chart-svg .pareto-line { stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 4 3; opacity: 0.7; }
 .spill-badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 10.5px; font-weight: 600; background: var(--serious-soft); color: var(--serious); margin-left: 6px; white-space: nowrap; }
 .truncated-badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 10.5px; font-weight: 600; background: var(--warning-soft); color: var(--warning); margin-left: 6px; white-space: nowrap; }
+.loop-badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 10.5px; font-weight: 600; background: var(--serious-soft); color: var(--serious); margin-left: 6px; white-space: nowrap; }
+.early-exit-badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 10.5px; font-weight: 600; background: var(--good-soft); color: var(--good); margin-left: 6px; white-space: nowrap; }
 
 /* ---- Model Card Grid & Badges ---- */
 .model-grid {
@@ -974,6 +976,7 @@ pre.output {
 .cellmark-pass   { background: var(--good); }
 .cellmark-fail   { background: var(--critical); }
 .cellmark-trunc  { background: var(--warning); }
+.cellmark-loop   { background: var(--critical); background-image: repeating-linear-gradient(45deg, rgba(255,255,255,0.25) 0 2px, transparent 2px 5px); }
 .cellmark-absent { background: transparent; border: 1px dashed var(--border-strong); }
 .grid-cell.clickable:hover .cellmark { outline: 2px solid var(--text); outline-offset: 1px; }
 

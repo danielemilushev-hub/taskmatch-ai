@@ -248,6 +248,8 @@ def run_benchmark(
                     seed=coding_cfg.get("seed", 42),
                     max_tokens=coding_cfg.get("max_tokens"),
                     call_timeout_seconds=coding_cfg.get("call_timeout_seconds"),
+                    detect_loops=coding_cfg.get("detect_loops", False),
+                    early_exit_check=coding_cfg.get("early_exit_check", True),
                     on_progress=_make_progress_logger(log, model_name, should_cancel=should_cancel, suite_name="coding"),
                 )
             model_result.suites["coding"] = SuiteRunResult(
@@ -296,6 +298,7 @@ def run_benchmark(
                     seed=pattern_reasoning_cfg.get("seed", 42),
                     max_tokens=pattern_reasoning_cfg.get("max_tokens"),
                     call_timeout_seconds=pattern_reasoning_cfg.get("call_timeout_seconds"),
+                    detect_loops=pattern_reasoning_cfg.get("detect_loops", False),
                     on_progress=_make_progress_logger(log, model_name, should_cancel=should_cancel, suite_name="pattern_reasoning"),
                 )
             model_result.suites["pattern_reasoning"] = SuiteRunResult(
