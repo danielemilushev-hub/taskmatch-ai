@@ -52,6 +52,11 @@ class ActiveRun:
         self.created_at = time.time()
         self.state_file = active_dir / f"{self.run_id}.json"
         self.live_monitor = LiveHardwareMonitor()
+        # Most-recently-completed problem's speed, for the live HUD -- not
+        # persisted to the saved run record (that already has per-problem
+        # figures); this is real-time-only, like resource_samples.
+        self.live_tokens_per_sec: float | None = None
+        self.live_ttft_seconds: float | None = None
 
     def _persist(self) -> None:
         try:
@@ -69,6 +74,10 @@ class ActiveRun:
     def log(self, msg: str) -> None:
         self.log_lines.append(msg)
         self._persist()
+
+    def update_live_stats(self, tokens_per_sec: float | None, ttft_seconds: float | None) -> None:
+        self.live_tokens_per_sec = tokens_per_sec
+        self.live_ttft_seconds = ttft_seconds
 
     def confirm(self, message: str) -> None:
         self.pending_message = message
@@ -96,6 +105,7 @@ class ActiveRun:
                     run_frontier_graded=self.run_frontier_graded,
                     should_cancel=self.cancel_event.is_set,
                     profile=self.profile,
+                    on_stats=self.update_live_stats,
                 )
                 self.result_run_id = record.run_id
                 self.status = "done"
@@ -127,6 +137,8 @@ class ActiveRun:
             "error": self.error,
             "result_run_id": self.result_run_id,
             "done": self.status in ("done", "error", "cancelled"),
+            "live_tokens_per_sec": self.live_tokens_per_sec,
+            "live_ttft_seconds": self.live_ttft_seconds,
         }
         if include_samples:
             data["resource_samples"] = self.live_monitor.latest_samples()

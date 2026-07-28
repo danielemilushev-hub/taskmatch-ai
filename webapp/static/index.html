@@ -111,8 +111,49 @@
           <span id="confirm-message"></span>
           <button class="secondary" id="confirm-continue">I've loaded it -- Continue</button>
         </div>
-        <h3 style="margin-bottom:8px;">Live Hardware</h3>
-        <p class="muted" style="margin-top:0;">Sampled every ~1s (GPU refreshes every ~3rd sample -- Windows' own GPU counters are slower to query than CPU/RAM/disk). Not saved to the run record; for real-time observation only.</p>
+
+        <!-- Hardware Spec Summary Header Banner -->
+        <div id="hardware-specs-banner" class="hw-specs-banner" style="margin-bottom:14px; padding:12px 14px; background:var(--surface); border:1px solid var(--border); border-radius:10px;">
+          <div class="row" style="justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:8px;">
+            <h3 style="margin:0; font-size:13px; display:flex; align-items:center; gap:8px;">
+              <span>🖥️ System Hardware Specs</span>
+              <span id="hw-vendor-badges" class="row" style="gap:4px;"></span>
+            </h3>
+            <span class="muted" id="hw-os-badge" style="font-size:11.5px;"></span>
+          </div>
+          <div class="hw-specs-grid" id="hw-specs-grid" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:8px;">
+            <div class="hw-spec-item" style="padding:6px 10px; background:var(--page); border-radius:6px; border:1px solid var(--border);"><span class="hw-label" style="font-size:11px; color:var(--text-muted); display:block;">🎴 GPU</span><span class="hw-value" id="hw-val-gpu" style="font-size:12.5px; font-weight:600; color:var(--text);">Detecting...</span></div>
+            <div class="hw-spec-item" style="padding:6px 10px; background:var(--page); border-radius:6px; border:1px solid var(--border);"><span class="hw-label" style="font-size:11px; color:var(--text-muted); display:block;">🖥️ CPU</span><span class="hw-value" id="hw-val-cpu" style="font-size:12.5px; font-weight:600; color:var(--text);">Detecting...</span></div>
+            <div class="hw-spec-item" style="padding:6px 10px; background:var(--page); border-radius:6px; border:1px solid var(--border);"><span class="hw-label" style="font-size:11px; color:var(--text-muted); display:block;">🧠 RAM</span><span class="hw-value" id="hw-val-ram" style="font-size:12.5px; font-weight:600; color:var(--text);">Detecting...</span></div>
+          </div>
+        </div>
+
+        <!-- Live Performance Telemetry HUD -->
+        <div id="run-telemetry-hud" class="run-telemetry-hud" style="display:none; margin-bottom:14px; padding:12px; background:var(--page); border:1px solid var(--accent); border-radius:10px; box-shadow: 0 0 15px rgba(0, 210, 255, 0.15);">
+          <div class="row" style="justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:8px;">
+            <div class="row" style="gap:8px; align-items:center;">
+              <span class="pulse-dot" style="display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--good); box-shadow:0 0 8px var(--good); animation: pulse 1.5s infinite;"></span>
+              <strong id="hud-active-model" style="font-size:13px; color:var(--text);">Benchmarking...</strong>
+            </div>
+            <div class="row" style="gap:6px; flex-wrap:wrap;">
+              <span class="model-badge" style="background:rgba(59, 130, 246, 0.15); color:#60a5fa; border:1px solid rgba(59, 130, 246, 0.3);" id="hud-tok-sec">⚡ -- tok/s</span>
+              <span class="model-badge" style="background:var(--surface);" id="hud-ttft">⏱️ -- TTFT</span>
+            </div>
+          </div>
+          <div class="progress-bar-track" style="height:6px; background:var(--surface); border-radius:4px; overflow:hidden;">
+            <div id="hud-progress-fill" style="width:0%; height:100%; background:linear-gradient(90deg, var(--accent), #3b82f6); transition:width 0.3s ease;"></div>
+          </div>
+          <div class="row" style="justify-content:space-between; font-size:11px; color:var(--text-muted); margin-top:4px;">
+            <span id="hud-progress-text">Task 0 / 0</span>
+            <span id="hud-pct-text">0%</span>
+          </div>
+        </div>
+
+        <h3 style="margin-bottom:8px; display:flex; align-items:center; gap:6px;">
+          <span>Live Hardware Monitor</span>
+          <span class="pulse-dot" style="display:inline-block; width:7px; height:7px; border-radius:50%; background:var(--good); box-shadow:0 0 6px var(--good);"></span>
+        </h3>
+        <p class="muted" style="margin-top:0;">Sampled every ~1s (GPU refreshes every ~3rd sample). Real-time observation telemetry.</p>
         <div class="live-monitor-grid" id="live-monitor-grid"></div>
         <div class="log" id="run-log" style="margin-top:16px;"></div>
       </div>

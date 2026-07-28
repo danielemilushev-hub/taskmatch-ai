@@ -318,6 +318,6 @@ def run(
         )
         results.append(result)
         if on_progress:
-            on_progress(idx + 1, len(problems), result.problem_id, result.passed)
+            on_progress(idx + 1, len(problems), result.problem_id, result.passed, result=result)
 
     return results

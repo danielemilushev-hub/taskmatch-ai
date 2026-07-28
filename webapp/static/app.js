@@ -440,6 +440,55 @@ async function loadModelCatalog() {
   }
 }
 
+async function loadHardwareSpecs() {
+  try {
+    const specs = await api("/api/hardware/specs");
+    const gpuEl = document.getElementById("hw-val-gpu");
+    const cpuEl = document.getElementById("hw-val-cpu");
+    const ramEl = document.getElementById("hw-val-ram");
+    const osBadge = document.getElementById("hw-os-badge");
+    const vendorBadges = document.getElementById("hw-vendor-badges");
+
+    if (gpuEl) {
+      if (Array.isArray(specs.gpu) && specs.gpu.length > 0) {
+        const g = specs.gpu[0];
+        gpuEl.textContent = `${g.name || "GPU"} (${g.memory || ""})`;
+      } else {
+        gpuEl.textContent = specs.gpu || "Standard Graphics";
+      }
+    }
+    if (cpuEl) {
+      const cores = specs.cpu_count_logical ? ` (${specs.cpu_count_logical} Threads)` : "";
+      cpuEl.textContent = `${specs.cpu || "CPU"}${cores}`;
+    }
+    if (ramEl) {
+      ramEl.textContent = specs.ram_total_gb ? `${specs.ram_total_gb} GB Total Memory` : "RAM";
+    }
+    if (osBadge) {
+      osBadge.textContent = specs.os ? `${specs.os}` : "";
+    }
+
+    if (vendorBadges) {
+      vendorBadges.innerHTML = "";
+      const text = `${specs.cpu || ""} ${JSON.stringify(specs.gpu || "")}`.toLowerCase();
+      if (text.includes("nvidia")) {
+        vendorBadges.innerHTML += `<span class="model-badge" style="background:rgba(16, 185, 129, 0.15); color:#34d399; border:1px solid rgba(16, 185, 129, 0.3);">NVIDIA</span>`;
+      }
+      if (text.includes("amd") || text.includes("radeon")) {
+        vendorBadges.innerHTML += `<span class="model-badge" style="background:rgba(239, 68, 68, 0.15); color:#f87171; border:1px solid rgba(239, 68, 68, 0.3);">AMD</span>`;
+      }
+      if (text.includes("intel")) {
+        vendorBadges.innerHTML += `<span class="model-badge" style="background:rgba(59, 130, 246, 0.15); color:#60a5fa; border:1px solid rgba(59, 130, 246, 0.3);">Intel</span>`;
+      }
+      if (text.includes("apple") || text.includes("m1") || text.includes("m2") || text.includes("m3") || text.includes("m4")) {
+        vendorBadges.innerHTML += `<span class="model-badge" style="background:rgba(168, 85, 247, 0.15); color:#c084fc; border:1px solid rgba(168, 85, 247, 0.3);">Apple Silicon</span>`;
+      }
+    }
+  } catch (e) {
+    console.error("Hardware specs fetch failed", e);
+  }
+}
+
 async function loadConfig() {
   state.config = await api("/api/config");
   state.config.models.forEach((m) => state.selectedModels.add(m));
@@ -456,6 +505,7 @@ async function loadConfig() {
   );
   await loadFrontierJudgeCard();
   updateRunScopeBar();
+  loadHardwareSpecs();
 }
 
 async function loadFrontierJudgeCard() {
@@ -913,6 +963,67 @@ async function resumeActiveRunIfAny() {
   }
 }
 
+function renderFormattedLogLines(logLines) {
+  if (!logLines || logLines.length === 0) return "";
+  return logLines.map((line) => {
+    let escaped = escapeHtml(line);
+    escaped = escaped.replace(/\bPASS\b/g, '<span class="log-pass">🟢 PASS</span>');
+    escaped = escaped.replace(/\bFAIL\b/g, '<span class="log-fail">🔴 FAIL</span>');
+    if (escaped.includes("switching to model:") || escaped.includes("running ")) {
+      escaped = `<span class="log-switching">${escaped}</span>`;
+    }
+    escaped = escaped.replace(/\[([\w\-\.\/]+)\]/g, '<span class="log-model">[$1]</span>');
+    return escaped;
+  }).join("\n");
+}
+
+function updateTelemetryHUD(data) {
+  const hud = document.getElementById("run-telemetry-hud");
+  if (!hud) return;
+  if (!data || data.done || !data.log || data.log.length === 0) {
+    hud.style.display = "none";
+    return;
+  }
+  hud.style.display = "block";
+
+  const modelEl = document.getElementById("hud-active-model");
+  const fillEl = document.getElementById("hud-progress-fill");
+  const textEl = document.getElementById("hud-progress-text");
+  const pctEl = document.getElementById("hud-pct-text");
+  const tokSecEl = document.getElementById("hud-tok-sec");
+  const ttftEl = document.getElementById("hud-ttft");
+
+  const lastLine = data.log[data.log.length - 1] || "";
+  const modelMatch = lastLine.match(/\[([\w\-\.\/]+)\]/);
+  if (modelMatch && modelEl) {
+    modelEl.textContent = `Benchmarking: ${modelMatch[1]}`;
+  }
+
+  // Most-recently-completed problem's real speed, not a placeholder --
+  // updated by the runner after every problem (see run_manager.py's
+  // update_live_stats / runner.py's on_stats hook).
+  if (tokSecEl) {
+    tokSecEl.textContent = data.live_tokens_per_sec != null
+      ? `⚡ ${fmtNum(data.live_tokens_per_sec, 1)} tok/s`
+      : "⚡ -- tok/s";
+  }
+  if (ttftEl) {
+    ttftEl.textContent = data.live_ttft_seconds != null
+      ? `⏱️ ${fmtNum(data.live_ttft_seconds, 2)}s TTFT`
+      : "⏱️ -- TTFT";
+  }
+
+  const countMatch = lastLine.match(/\[(\d+)\/(\d+)\]/);
+  if (countMatch && fillEl && textEl && pctEl) {
+    const cur = parseInt(countMatch[1], 10);
+    const tot = parseInt(countMatch[2], 10);
+    const pct = Math.round((cur / tot) * 100);
+    fillEl.style.width = `${pct}%`;
+    textEl.textContent = `Task ${cur} / ${tot}`;
+    pctEl.textContent = `${pct}%`;
+  }
+}
+
 function pollRun() {
   clearTimeout(state.pollTimer);
   const poll = async () => {
@@ -920,15 +1031,16 @@ function pollRun() {
     try {
       data = await api(`/api/run/${state.activeRunId}/status`);
     } catch (e) {
-      document.getElementById("run-log").textContent += `\n\n(lost connection to run: ${e.message})`;
+      document.getElementById("run-log").innerHTML += `\n\n(lost connection to run: ${escapeHtml(e.message)})`;
       localStorage.removeItem("localbench-active-run");
       document.getElementById("start-run").disabled = false;
       document.getElementById("stop-run").style.display = "none";
       return;
     }
-    document.getElementById("run-log").textContent = data.log.join("\n");
+    document.getElementById("run-log").innerHTML = renderFormattedLogLines(data.log);
     document.getElementById("run-log").scrollTop = document.getElementById("run-log").scrollHeight;
     renderLiveMonitor(data.resource_samples || []);
+    updateTelemetryHUD(data);
 
     const banner = document.getElementById("confirm-banner");
     if (data.status === "waiting_confirm") {
@@ -942,10 +1054,11 @@ function pollRun() {
       localStorage.removeItem("localbench-active-run");
       document.getElementById("start-run").disabled = false;
       document.getElementById("stop-run").style.display = "none";
+      document.getElementById("run-telemetry-hud").style.display = "none";
       if (data.error) {
-        document.getElementById("run-log").textContent += `\n\nERROR: ${data.error}`;
+        document.getElementById("run-log").innerHTML += `\n\n<span class="log-fail">ERROR: ${escapeHtml(data.error)}</span>`;
       } else {
-        document.getElementById("run-log").textContent += `\n\nDone -- saved as run ${data.result_run_id}`;
+        document.getElementById("run-log").innerHTML += `\n\n<span class="log-pass">Done -- saved as run ${escapeHtml(data.result_run_id)}</span>`;
       }
       return;
     }
@@ -1077,6 +1190,13 @@ const LIVE_METRICS = [
   { key: "gpu_mem_used_gb", label: "GPU Memory", unit: "GB", minSpan: 0.5 },
   { key: "disk_read_mb_s", label: "Disk Read", unit: "MB/s", minSpan: 1 },
   { key: "disk_write_mb_s", label: "Disk Write", unit: "MB/s", minSpan: 1 },
+  // Most informative on unified-memory machines (Apple Silicon), where RAM
+  // and "VRAM" are one pool -- rising swap is the actual sign a model has
+  // outgrown available memory and is spilling to disk (which costs decode
+  // speed), not a separate VRAM figure the way discrete GPUs have one.
+  // Cross-platform (psutil), so shown everywhere -- normally near zero on a
+  // machine with plenty of RAM regardless of OS.
+  { key: "swap_percent", label: "Swap", unit: "%", fixedMax: 100 },
 ];
 
 
@@ -1168,13 +1288,51 @@ function renderLiveMonitor(samples) {
     header.appendChild(valueEl);
     tile.appendChild(header);
 
+    const strokePath = buildSparklinePath(values, width, height, yMin, yMax);
+    let fillPathD = "";
+    if (strokePath && values.length >= 2) {
+      fillPathD = `${strokePath} L ${width.toFixed(1)},${height} L 0,${height} Z`;
+    }
+
     const svgNs = "http://www.w3.org/2000/svg";
     const svg = document.createElementNS(svgNs, "svg");
     svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
     svg.setAttribute("class", "live-monitor-svg");
+
+    const defs = document.createElementNS(svgNs, "defs");
+    const gradId = `spark-grad-${metric.key}`;
+    const grad = document.createElementNS(svgNs, "linearGradient");
+    grad.setAttribute("id", gradId);
+    grad.setAttribute("x1", "0"); grad.setAttribute("y1", "0");
+    grad.setAttribute("x2", "0"); grad.setAttribute("y2", "1");
+
+    const isPurple = metric.key.includes("gpu") || metric.key.includes("ram");
+    const strokeColor = isPurple ? "#a855f7" : "#00d2ff";
+
+    const stop1 = document.createElementNS(svgNs, "stop");
+    stop1.setAttribute("offset", "0%");
+    stop1.setAttribute("stop-color", strokeColor);
+    stop1.setAttribute("stop-opacity", "0.35");
+    const stop2 = document.createElementNS(svgNs, "stop");
+    stop2.setAttribute("offset", "100%");
+    stop2.setAttribute("stop-color", strokeColor);
+    stop2.setAttribute("stop-opacity", "0.0");
+
+    grad.appendChild(stop1); grad.appendChild(stop2);
+    defs.appendChild(grad);
+    svg.appendChild(defs);
+
+    if (fillPathD) {
+      const fillPath = document.createElementNS(svgNs, "path");
+      fillPath.setAttribute("d", fillPathD);
+      fillPath.setAttribute("fill", `url(#${gradId})`);
+      svg.appendChild(fillPath);
+    }
+
     const path = document.createElementNS(svgNs, "path");
-    path.setAttribute("d", buildSparklinePath(values, width, height, yMin, yMax));
+    path.setAttribute("d", strokePath);
     path.setAttribute("class", "live-monitor-line");
+    if (isPurple) path.setAttribute("stroke", "#a855f7");
     svg.appendChild(path);
     tile.appendChild(svg);
 

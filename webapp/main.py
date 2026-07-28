@@ -112,6 +112,20 @@ def get_config() -> dict:
     }
 
 
+_hw_specs_cache = None
+
+@app.get("/api/hardware/specs")
+def get_hardware_specs() -> dict:
+    global _hw_specs_cache
+    if _hw_specs_cache is None:
+        try:
+            from localbench.hardware import get_hardware_snapshot
+            _hw_specs_cache = get_hardware_snapshot()
+        except Exception as e:
+            _hw_specs_cache = {"error": str(e)}
+    return _hw_specs_cache
+
+
 @app.get("/api/models/detect")
 def detect_models() -> dict:
     """Query the configured runtime directly for what's actually loadable
