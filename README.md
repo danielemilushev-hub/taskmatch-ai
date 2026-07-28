@@ -9,6 +9,8 @@ endpoint). It exists to answer one question with real, reproducible data:
 data-sensitive or cost-sensitive work to a free local model instead of a
 paid frontier one, backed by numbers instead of a guess.
 
+![Compare view: head-to-head verdict with confidence intervals, a speed-vs-accuracy Pareto chart, and a per-suite radar chart](docs/compare_view.png)
+
 ## What it measures
 
 Six fully deterministic job suites (no LLM-as-judge — every result is
