@@ -38,12 +38,51 @@ def _cpu_friendly_name_windows() -> str | None:
     return name or None
 
 
+def _cpu_friendly_name_macos() -> str | None:
+    """sysctl's machdep.cpu.brand_string gives the marketing name (e.g.
+    "Apple M3 Max") -- no root needed, sysctl reads are unprivileged."""
+    if platform.system() != "Darwin":
+        return None
+    proc = subprocess.run(
+        ["sysctl", "-n", "machdep.cpu.brand_string"],
+        capture_output=True, text=True, timeout=5,
+    )
+    name = proc.stdout.strip()
+    return name or None
+
+
+def _cpu_core_breakdown_macos() -> tuple[int, int] | None:
+    """(performance_cores, efficiency_cores) on Apple Silicon via the
+    hw.perflevel0/1 sysctls (macOS 12+, unprivileged) -- Intel Macs and
+    older macOS don't have these keys, so this quietly returns None there
+    rather than reporting a fake homogeneous split."""
+    if platform.system() != "Darwin":
+        return None
+    try:
+        perf = subprocess.run(
+            ["sysctl", "-n", "hw.perflevel0.physicalcpu"],
+            capture_output=True, text=True, timeout=5,
+        )
+        eff = subprocess.run(
+            ["sysctl", "-n", "hw.perflevel1.physicalcpu"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if perf.returncode != 0 or eff.returncode != 0:
+            return None
+        return int(perf.stdout.strip()), int(eff.stdout.strip())
+    except (ValueError, OSError):
+        return None
+
+
 def _cpu_and_ram() -> dict:
     info = {
-        "cpu": _try(_cpu_friendly_name_windows) or platform.processor() or "unknown",
+        "cpu": _try(_cpu_friendly_name_windows) or _try(_cpu_friendly_name_macos) or platform.processor() or "unknown",
         "cpu_count_logical": os.cpu_count(),
         "cpu_count_physical": None,
         "ram_total_gb": None,
+        # Apple Silicon only -- (performance_cores, efficiency_cores) or None
+        # everywhere else (including Intel Macs).
+        "cpu_core_breakdown": _try(_cpu_core_breakdown_macos),
     }
     try:
         import psutil
@@ -175,8 +214,46 @@ def _gpu_info_windows_wmi() -> list[dict] | None:
     return gpus or None
 
 
+def _gpu_info_macos() -> list[dict] | None:
+    """`system_profiler SPDisplaysDataType -json` -- no root needed. NOT
+    independently verified against real Mac hardware (no Mac available in
+    this codebase's development environment): the exact key names below
+    (`sppci_model`, `sppci_cores`) are the ones most commonly cited for this
+    command's JSON output, but Apple doesn't document this schema and it has
+    reportedly shifted before. Falls through to "unknown" on any KeyError/
+    shape mismatch rather than guessing -- same contract as every other
+    probe in this file."""
+    if platform.system() != "Darwin":
+        return None
+    proc = subprocess.run(
+        ["system_profiler", "SPDisplaysDataType", "-json"],
+        capture_output=True, text=True, timeout=15,
+    )
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return None
+    data = _json.loads(proc.stdout)
+    gpus = []
+    for entry in data.get("SPDisplaysDataType", []):
+        name = entry.get("sppci_model") or entry.get("_name")
+        if not name:
+            continue
+        cores = entry.get("sppci_cores")
+        gpus.append(
+            {
+                "name": f"{name} ({cores}-Core GPU)" if cores else name,
+                "source": "system_profiler",
+            }
+        )
+    return gpus or None
+
+
 def _gpu_info() -> list[dict] | str:
-    for probe in (_gpu_info_nvidia, _gpu_info_windows_registry, _gpu_info_windows_wmi):
+    for probe in (
+        _gpu_info_nvidia,
+        _gpu_info_windows_registry,
+        _gpu_info_windows_wmi,
+        _gpu_info_macos,
+    ):
         result = _try(probe)
         if result:
             return result

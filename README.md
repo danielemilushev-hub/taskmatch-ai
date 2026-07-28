@@ -279,20 +279,23 @@ package pointed at OpenRouter's endpoint, so it needs no separate SDK.
   OS-level sandboxing (no seccomp/cgroups/chroot). That's the practical
   ceiling on Windows without extra tooling; don't run this against
   untrusted models you don't want executing arbitrary code on your machine.
-- **VRAM is tracked two different ways, with two different levels of
-  vendor support:**
-  - The **per-run saved delta** (shown in History/Compare) samples via
-    `nvidia-smi` — NVIDIA only. On other GPUs it's honestly reported as
-    unavailable, never guessed.
-  - The **live hardware monitor** (during a run, New Run tab) instead
-    queries Windows' own GPU performance counters (the same ones backing
-    Task Manager's GPU tab), which work for *any* vendor including
-    AMD/Intel — but each query takes a few seconds, so GPU samples there
-    refresh on a slower cadence than CPU/RAM/disk, and neither this nor
-    the live monitor's readings are persisted into the saved run.
-  - Static hardware-snapshot VRAM *size* (not usage) falls back to a
-    Windows registry read when `nvidia-smi` isn't present, which does work
-    cross-vendor.
+- **VRAM/GPU-utilization sampling (`localbench/gpu_probe.py`) tries three
+  probes in order, with uneven verification:**
+  - `nvidia-smi` — NVIDIA, and genuinely cross-platform (ships with the
+    driver on Linux too, not just Windows). Live-tested this session.
+  - Windows GPU performance counters via CIM — the same counters Task
+    Manager's GPU tab reads; works for *any* vendor (AMD/Intel/NVIDIA) but
+    only on Windows. Live-tested this session (this machine's own AMD GPU).
+  - `rocm-smi` / `amd-smi` — AMD on Linux. **Written defensively but not
+    verified against real ROCm hardware** — no ROCm machine was available
+    to confirm the exact JSON key names this parses actually match a real
+    installation. It degrades to "unavailable" rather than crashing or
+    guessing if the shape doesn't match, but treat a `rocm-smi`/`amd-smi`
+    reading as plausible, not confirmed, until checked on real hardware.
+  - If none of these work (macOS, or Linux with neither NVIDIA nor ROCm),
+    GPU usage is honestly reported as unavailable, never guessed. Static
+    hardware-snapshot VRAM *size* (not live usage) additionally falls back
+    to a Windows registry read when `nvidia-smi` isn't present.
   - None of the supported runtimes expose an exact GPU-vs-CPU offload
     ratio via their API/CLI regardless of source — if tokens/sec looks
     much lower than expected for a model's size, check the runtime's own
@@ -300,10 +303,12 @@ package pointed at OpenRouter's endpoint, so it needs no separate SDK.
 - **`lms load` can stack duplicate model instances** instead of reusing an
   already-loaded one — `runtime.unload_all_cmd` exists specifically to
   guarantee a clean slate before every switch.
-- **Windows-first**: the live hardware monitor and the registry-based VRAM
-  size fallback are Windows-specific (`platform.system() == "Windows"`
-  gated); CPU/RAM figures use `psutil` and work anywhere, but GPU data
-  won't be available on Linux/macOS yet.
+- **macOS**: CPU/RAM figures use `psutil` and work anywhere, but there is
+  currently no GPU probe at all on macOS. Apple Silicon's unified memory
+  architecture also means "VRAM" isn't a separate quantity the way it is on
+  a discrete GPU, so even a future probe would report something
+  conceptually different (e.g. swap pressure) rather than a directly
+  comparable VRAM-used figure.
 
 ## Project layout
 

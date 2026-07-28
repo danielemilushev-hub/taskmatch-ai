@@ -3,6 +3,7 @@ from localbench.json_extract import extract_json
 from localbench.hardware import get_hardware_snapshot
 from localbench.results import ProblemResult, SuiteRunResult, ModelRunResult, RunRecord
 from localbench.engine import _has_repetition
+from localbench.gpu_probe import _rocm_smi_json_to_reading
 
 class TestLocalbenchCore(unittest.TestCase):
     def test_json_extract_clean(self):
@@ -71,6 +72,23 @@ class TestLocalbenchCore(unittest.TestCase):
             f"*   Line {666 + i * 4}: `if a >= 0 and b >= 0:`" for i in range(8)
         )
         self.assertTrue(_has_repetition(lines, window_chars=1200, phrase_len=18, min_repeats=6))
+
+    def test_rocm_smi_json_to_reading_parses_documented_keys(self):
+        # The rocm-smi label format most commonly cited in ROCm docs/guides --
+        # NOT independently verified against a real ROCm install (no ROCm
+        # hardware available). This locks in the parser's own behavior given
+        # that shape, not that the shape itself is correct.
+        data = {"card0": {"GPU use (%)": "42", "VRAM Total Used Memory (B)": str(4 * 1024**3)}}
+        reading = _rocm_smi_json_to_reading(data)
+        self.assertIsNotNone(reading)
+        self.assertEqual(reading["util_percent"], 42.0)
+        self.assertAlmostEqual(reading["used_mb"], 4 * 1024, places=0)
+
+    def test_rocm_smi_json_to_reading_returns_none_on_unrecognized_shape(self):
+        # A future ROCm version using different labels should degrade to
+        # "unavailable", never a crash or a fabricated number.
+        data = {"card0": {"Some Other Field": "1"}}
+        self.assertIsNone(_rocm_smi_json_to_reading(data))
 
     def test_has_repetition_short_threshold_ignores_normal_prose(self):
         # The higher repeat count (6, vs 3-4 for the long-phrase check) is

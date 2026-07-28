@@ -54,7 +54,17 @@ class LiveHardwareMonitor:
 
     def _run(self) -> None:
         while not self._stop_event.is_set():
-            sample = self._collect()
+            try:
+                sample = self._collect()
+            except Exception:
+                # A single bad tick (a transient psutil/subprocess hiccup)
+                # must not silently end monitoring for the rest of the run --
+                # this thread has no supervisor, so an uncaught exception
+                # here means every future sample is just missing with no
+                # error ever surfaced. Skip the tick, keep sampling.
+                self._tick += 1
+                self._stop_event.wait(self.interval)
+                continue
             with self._lock:
                 self._samples.append(sample)
             self._tick += 1
@@ -63,6 +73,16 @@ class LiveHardwareMonitor:
     def _collect(self) -> dict:
         cpu_percent = psutil.cpu_percent(interval=None)
         mem = psutil.virtual_memory()
+        try:
+            # Observed failing on a real machine: psutil.swap_memory() raises
+            # RuntimeError here when Windows Performance Counters are
+            # disabled/corrupted, which is an environment issue unrelated to
+            # whether swap itself is usable. Degrades to "unavailable" like
+            # every other probe in this codebase, rather than taking down
+            # the whole sampling tick over one optional metric.
+            swap_percent = psutil.swap_memory().percent
+        except Exception:
+            swap_percent = None
 
         now = time.monotonic()
         disk_io = psutil.disk_io_counters()
@@ -85,6 +105,13 @@ class LiveHardwareMonitor:
             "cpu_percent": cpu_percent,
             "ram_used_gb": round(mem.used / (1024**3), 2),
             "ram_total_gb": round(mem.total / (1024**3), 2),
+            # Most useful on unified-memory machines (Apple Silicon), where
+            # RAM and "VRAM" are the same physical pool -- swapping is the
+            # actual signal that a model has outgrown available memory and
+            # is spilling to disk (which slows decode speed), not a
+            # separate VRAM-used figure the way discrete GPUs have. Cheap
+            # and cross-platform (psutil), so sampled everywhere either way.
+            "swap_percent": swap_percent,
             "disk_read_mb_s": round(read_bytes_sec / (1024**2), 2),
             "disk_write_mb_s": round(write_bytes_sec / (1024**2), 2),
             "gpu_util_percent": gpu_data.get("util_percent"),
