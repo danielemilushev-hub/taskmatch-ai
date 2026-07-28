@@ -1,0 +1,68 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "taskmatch-ai"
+version = "0.1.0"
+description = "Task-driven benchmarking for locally-running LLMs (LM Studio, Ollama, llama.cpp) -- deterministic scoring, a live hardware monitor, and an opt-in frontier judge."
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Daniel Milushev", email = "dmbul@mail.bg" }]
+requires-python = ">=3.11"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "requests==2.34.2",
+    "PyYAML==6.0.3",
+    "jsonschema==4.26.0",
+    "psutil==7.2.2",
+    "xhtml2pdf==0.2.17",
+    "fastapi==0.140.0",
+    "uvicorn==0.51.0",
+    "python-multipart==0.0.32",
+    "python-dotenv==1.2.2",
+    "ruamel.yaml==0.18.17",
+]
+
+# The frontier judge is opt-in and its SDKs are only imported lazily by
+# whichever provider you actually configure -- see
+# localbench/judge/factory.py::PROVIDER_PACKAGES. Not in the core
+# dependency list above, so installing this tool never pulls in three
+# extra vendor SDKs you may never touch.
+[project.optional-dependencies]
+anthropic = ["anthropic"]
+openai = ["openai"]          # also covers the "openrouter" judge provider,
+                              # which is OpenAI-compatible and reuses this SDK
+gemini = ["google-genai"]
+judge = ["anthropic", "openai", "google-genai"]
+
+[project.urls]
+Homepage = "https://github.com/dmbul/taskmatch-ai"
+Issues = "https://github.com/dmbul/taskmatch-ai/issues"
+
+[project.scripts]
+taskmatch = "cli:main"
+
+[tool.setuptools]
+py-modules = ["cli"]
+
+[tool.setuptools.packages.find]
+include = ["localbench*", "webapp*"]
+
+[tool.setuptools.package-data]
+webapp = ["static/*"]
+# Duplicate of the root config.example.yaml, packaged so `taskmatch serve`
+# can bootstrap a config.yaml when run from any directory after a real pip
+# install -- the repo root doesn't travel with the wheel. CI diffs the two
+# copies so they can't silently drift apart.
+localbench = ["config.example.yaml"]

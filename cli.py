@@ -41,7 +41,6 @@ def _make_stdout_unicode_safe() -> None:
 
 
 def cmd_run(args: argparse.Namespace) -> None:
-    _make_stdout_unicode_safe()
     if bootstrap_config(args.config):
         print(f"created {args.config} from config.example.yaml -- edit it to point at your runtime")
     config = load_config(args.config)
@@ -100,7 +99,6 @@ def cmd_run(args: argparse.Namespace) -> None:
 def cmd_serve(args: argparse.Namespace) -> None:
     import uvicorn
 
-    _make_stdout_unicode_safe()
     if bootstrap_config():
         print("created config.yaml from config.example.yaml -- edit it, or use the Settings tab")
 
@@ -110,6 +108,15 @@ def cmd_serve(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
+    # Applied before argparse is even constructed: --help, an unknown
+    # argument, or any other path that prints before a subcommand runs must
+    # be covered too, not just cmd_run/cmd_serve. This prog description
+    # itself contains an em-dash, which is exactly the kind of character
+    # that crashed a legacy-codepage console (confirmed reproducible under
+    # cp437 -- the classic Windows console default -- even though it happens
+    # to work under cp1251, which maps it).
+    _make_stdout_unicode_safe()
+
     parser = argparse.ArgumentParser(prog="taskmatch", description="TaskMatch AI — Task-driven evaluation for local LLMs.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 

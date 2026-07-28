@@ -55,6 +55,14 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Config template must match its packaged copy
+        # config.example.yaml is duplicated at the repo root (what the
+        # README's `cp` instruction uses) and inside localbench/ (what a
+        # real pip install falls back to via importlib.resources, since the
+        # repo root doesn't travel with the wheel). If they diverge, an
+        # installed copy silently ships a stale template.
+        run: diff config.example.yaml localbench/config.example.yaml
+
       - name: Fail if a real config or .env was committed
         run: |
           if git ls-files --error-unmatch config.yaml 2>/dev/null; then

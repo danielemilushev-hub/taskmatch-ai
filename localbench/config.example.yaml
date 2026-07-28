@@ -1,0 +1,137 @@
+# localbench config
+#
+# Runtime-agnostic: any server exposing an OpenAI-compatible
+# /v1/chat/completions endpoint works here (LM Studio, Ollama, llama.cpp
+# server, vLLM, etc). Point base_url at yours.
+
+runtime:
+  base_url: "http://localhost:1234/v1"
+  api_key: "not-needed"        # sent as a Bearer token; most local servers ignore it
+  request_timeout_seconds: 120
+  # Run once before switching to ANY model, to guarantee a clean slate.
+  # Needed because some runtimes (e.g. LM Studio's `lms load`) will happily
+  # stack a second instance of a model that's already loaded instead of
+  # reusing it, silently wasting VRAM. Leave null if not applicable.
+  unload_all_cmd: "lms unload --all"
+
+# Models to benchmark, in order. The benchmark runs strictly sequentially:
+# one model is loaded, fully benchmarked across all enabled suites, then
+# unloaded before the next one is loaded. This is deliberate — these are
+# large models on limited VRAM and must never run concurrently.
+#
+# For each model, "switch" tells localbench how to load/unload it:
+#   - load_cmd / unload_cmd: a shell command run before/after benchmarking
+#     this model (e.g. LM Studio's `lms` CLI). Use "{model}" as a
+#     placeholder for the model name if needed.
+#   - if switch is omitted (or load_cmd is null), localbench pauses and
+#     prints "Load model X in your runtime, then press Enter" instead of
+#     running anything — use this for Ollama/llama.cpp or manual control.
+models:
+  - name: "google/gemma-4-12b-qat"
+    switch:
+      load_cmd: 'lms load "{model}" -y --gpu max'
+      unload_cmd: "lms unload --all"
+
+  - name: "qwen/qwen3-coder-30b"
+    switch:
+      load_cmd: 'lms load "{model}" -y --gpu max'
+      unload_cmd: "lms unload --all"
+
+  # Example of a model benchmarked with manual switching (e.g. if you run
+  # it in Ollama instead): just omit `switch` entirely.
+  # - name: "llama3:8b"
+
+# Per-suite max_tokens overrides the global sampling.max_tokens below.
+# These exist because reasoning models (e.g. gemma's QAT build) spend a
+# variable, sometimes large number of hidden "thinking" tokens before ever
+# writing the answer -- if max_tokens is too low, the response gets cut off
+# mid-thought (finish_reason=length) and the suite correctly reports that as
+# a truncation error, NOT a wrong answer. A live baseline run against gemma
+# with the old flat 1024-token budget hit this on nearly every
+# pattern_reasoning problem (0/10) and several others -- these overrides
+# were raised in response to that real result, not guessed in advance.
+suites:
+  json_schema:
+    enabled: true
+    # Generated from `seed` so schemas are novel each seed, and N is high
+    # enough for a usable confidence interval. generated: false restores the
+    # original 5 hand-written problems.
+    generated: true
+    num_problems: 20
+    seed: 42
+    max_tokens: 2048
+  coding:
+    enabled: true
+    timeout_seconds: 10
+    # Procedurally generated from `seed` so the exact tasks aren't in any
+    # training corpus. Set generated: false for the classic fixed set
+    # (factorial/fibonacci/is_prime), which models may pass from memory.
+    generated: true
+    num_problems: 12
+    seed: 42
+    max_tokens: 2048
+  logic_math:
+    enabled: true
+    num_problems: 30
+    seed: 42
+    max_tokens: 2048
+  instruction_following:
+    enabled: true
+    num_problems: 24
+    seed: 42
+    max_tokens: 2560
+  pattern_reasoning:
+    enabled: true
+    num_problems: 20
+    seed: 42
+    max_tokens: 4096
+    # this suite makes the model reason much longer than the others (a 120s
+    # global timeout cut off in-progress generations even after raising
+    # max_tokens) -- confirmed fixed at 240s against gemma live.
+    call_timeout_seconds: 360
+  long_context:
+    enabled: true
+    num_problems: 8
+    seed: 42
+    window_lines: 1000
+    # bug_locator tasks make this model reason much longer than simple
+    # needle retrieval (observed a 180s timeout on an 800-line excerpt) --
+    # given generous headroom in response to that real result.
+    timeout_seconds: 300
+    max_tokens: 2048
+    # Optional: path to a real source file on THIS machine to use as the
+    # excerpt (more realistic than the bundled synthetic fallback). Left
+    # null by default so config.yaml stays generic and safe to commit --
+    # if you set this to a real path, it'll reveal that path if you commit
+    # this file, so consider keeping that edit local/uncommitted.
+    source_file: null
+
+sampling:
+  temperature: 0.2
+  max_tokens: 1536
+
+output:
+  results_dir: "results"
+
+# Frontier judge -- opt-in, spends real money per run (task generation +
+# grading are separate paid API calls). Never runs as part of `--job all`;
+# only via the explicit `frontier_graded` job, which also requires
+# confirmation at run time. See TASK_SPEC.md for what the judge is and
+# isn't allowed to treat as ground truth. API keys go in .env (see
+# .env.example), never here.
+judge:
+  enabled: false
+  provider: "anthropic"        # anthropic | openai | gemini | openrouter
+  model: "claude-sonnet-5"     # e.g. "gpt-5", "gemini-2.5-pro", or an OpenRouter model string
+  num_tasks: 6
+  pass_threshold: 7            # score out of 10
+  # Avoid judging a model with a same-family judge (self-preference bias) --
+  # e.g. don't grade a Llama-derived local model with a Llama judge via
+  # OpenRouter, where you have a choice.
+  categories:
+    - instruction_following
+    - source_grounded_summarization
+    - reasoning_explanation
+    - creative_writing
+    - code_explanation
+    - hallucination_probe
