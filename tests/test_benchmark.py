@@ -1,7 +1,7 @@
 import unittest
 from localbench.json_extract import extract_json
 from localbench.hardware import get_hardware_snapshot
-from localbench.results import ProblemResult, SuiteRunResult, ModelRunResult, RunRecord
+from localbench.results import ProblemResult, SuiteRunResult
 from localbench.engine import _has_repetition
 from localbench.gpu_probe import _rocm_smi_json_to_reading, _ioreg_entries_to_reading, _amd_smi_json_to_reading
 

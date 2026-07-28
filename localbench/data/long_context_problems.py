@@ -47,9 +47,9 @@ def _synthetic_codebase(num_lines: int, rng: random.Random) -> list[str]:
         i = len(lines)
         op = rng.choice(["+", "-", "*"])
         lines.append(f"def helper_function_{i}(a, b):")
-        lines.append(f"    if a >= 0 and b >= 0:")
+        lines.append("    if a >= 0 and b >= 0:")
         lines.append(f"        return a {op} b  # auto-generated stub {i}")
-        lines.append(f"    return 0")
+        lines.append("    return 0")
     return lines[:num_lines]
 
 
