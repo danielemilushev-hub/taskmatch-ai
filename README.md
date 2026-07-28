@@ -76,8 +76,10 @@ Requires **Python 3.11+** and a local runtime already serving an
 OpenAI-compatible API (LM Studio, Ollama, llama.cpp, vLLM...).
 
 ```bash
-git clone https://github.com/danielemilushev-hub/taskmatch-ai && cd taskmatch-ai
-pip install -r requirements.txt && python cli.py serve
+git clone https://github.com/danielemilushev-hub/taskmatch-ai
+cd taskmatch-ai
+pip install -r requirements.txt
+python cli.py serve
 ```
 
 That's it — the dashboard opens at `http://localhost:8000`. On first run
