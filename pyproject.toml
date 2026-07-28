@@ -47,8 +47,8 @@ gemini = ["google-genai"]
 judge = ["anthropic", "openai", "google-genai"]
 
 [project.urls]
-Homepage = "https://github.com/dmbul/taskmatch-ai"
-Issues = "https://github.com/dmbul/taskmatch-ai/issues"
+Homepage = "https://github.com/danielemilushev-hub/taskmatch-ai"
+Issues = "https://github.com/danielemilushev-hub/taskmatch-ai/issues"
 
 [project.scripts]
 taskmatch = "cli:main"
