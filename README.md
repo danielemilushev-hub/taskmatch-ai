@@ -1,5 +1,9 @@
 # TaskMatch AI
 
+[![CI](https://github.com/danielemilushev-hub/taskmatch-ai/actions/workflows/ci.yml/badge.svg)](https://github.com/danielemilushev-hub/taskmatch-ai/actions/workflows/ci.yml)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-green)](LICENSE)
+
 **Task-driven evaluation for local LLMs.**
 
 A benchmarking tool for locally-running LLMs (LM Studio, Ollama, llama.cpp,
