@@ -491,13 +491,40 @@ async function loadHardwareSpecs() {
 
 async function loadConfig() {
   state.config = await api("/api/config");
-  state.config.models.forEach((m) => state.selectedModels.add(m));
   Object.entries(state.config.suites).forEach(([name, sVal]) => {
     const isEnabled = typeof sVal === "object" ? sVal.enabled : sVal;
     if (isEnabled) state.selectedSuites.add(name);
   });
   if (!state.modelCatalog) await loadModelCatalog();
-  renderModelGrid(document.getElementById("model-checklist"), state.config.models, state.selectedModels);
+
+  // Auto-detect what the runtime on THIS machine actually has, instead of
+  // trusting config.yaml (which may list models from another machine).
+  // Config models that aren't present here stay visible but deselected, so
+  // a run can't silently include a model that will fail to load.
+  const configModels = state.config.models;
+  let modelList = configModels;
+  const detectStatus = document.getElementById("detect-status");
+  try {
+    const data = await api("/api/models/detect");
+    if (data.models && data.models.length) {
+      const detectedSet = new Set(data.models);
+      modelList = [...data.models, ...configModels.filter((m) => !detectedSet.has(m))];
+      configModels.filter((m) => detectedSet.has(m)).forEach((m) => state.selectedModels.add(m));
+      const missing = configModels.filter((m) => !detectedSet.has(m));
+      if (detectStatus) {
+        detectStatus.textContent =
+          `auto-detected ${data.models.length} model(s) on the runtime` +
+          (missing.length ? ` — ${missing.length} config model(s) not found here (deselected)` : "");
+      }
+    } else {
+      configModels.forEach((m) => state.selectedModels.add(m));
+      if (detectStatus) detectStatus.textContent = "runtime reports no models — showing config.yaml list";
+    }
+  } catch (e) {
+    configModels.forEach((m) => state.selectedModels.add(m));
+    if (detectStatus) detectStatus.textContent = "runtime not reachable — showing config.yaml models";
+  }
+  renderModelGrid(document.getElementById("model-checklist"), modelList, state.selectedModels);
   renderSuiteGrid(
     document.getElementById("suite-checklist"),
     state.config.suites,

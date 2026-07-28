@@ -8,6 +8,7 @@ canned ChatResults, so these tests exercise the actual grading logic
 import unittest
 
 from localbench.engine import ChatResult
+from localbench.runner import ModelSwitchError, _switch_to_model
 from localbench.suites.json_schema_suite import _run_one as json_run_one
 from localbench.suites.coding_suite import _execute_candidate, extract_code
 
@@ -139,6 +140,22 @@ class TestCodingSandbox(unittest.TestCase):
     def test_code_extraction_from_fenced_response(self):
         text = "Here you go:\n```python\ndef add_two(a, b):\n    return a + b\n```"
         self.assertIn("def add_two", extract_code(text))
+
+
+class TestModelSwitching(unittest.TestCase):
+    def test_failed_load_command_raises_skippable_error(self):
+        # A load command that exits non-zero (model not downloaded on this
+        # machine) must raise ModelSwitchError -- which the run loop catches
+        # to skip just that model -- not crash with a raw CalledProcessError.
+        model_cfg = {
+            "name": "not-a-real-model",
+            "switch": {"load_cmd": "exit 1"},
+        }
+        logs = []
+        with self.assertRaises(ModelSwitchError) as ctx:
+            _switch_to_model(model_cfg, "http://localhost:9", None, logs.append, lambda m: None)
+        self.assertIn("not-a-real-model", str(ctx.exception))
+        self.assertIn("downloaded", str(ctx.exception))
 
 
 if __name__ == "__main__":

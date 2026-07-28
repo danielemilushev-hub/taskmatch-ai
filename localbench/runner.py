@@ -43,6 +43,12 @@ class RunCancelled(Exception):
     """
 
 
+class ModelSwitchError(Exception):
+    """A model's load command failed -- e.g. the model isn't downloaded on
+    this machine. Raised so the run loop can skip just that model instead of
+    aborting the entire run (and every model after it)."""
+
+
 DEFAULT_PAUSE_PROMPT = (
     "\n>>> Load model '{model}' in your runtime, then press Enter to continue... "
 )
@@ -78,11 +84,21 @@ def _switch_to_model(model_cfg: dict, base_url: str, unload_all_cmd: str | None,
         # always start from a clean slate before loading the target model.
         if unload_all_cmd:
             log(f"clearing loaded models via: {unload_all_cmd}")
-            subprocess.run(unload_all_cmd, shell=True, check=True)
+            try:
+                subprocess.run(unload_all_cmd, shell=True, check=True)
+            except subprocess.CalledProcessError as e:
+                # Non-fatal: often just means nothing was loaded to unload.
+                log(f"WARNING: unload-all command failed (exit {e.returncode}); continuing")
 
         cmd = load_cmd.format(model=name)
         log(f"loading '{name}' via: {cmd}")
-        subprocess.run(cmd, shell=True, check=True)
+        try:
+            subprocess.run(cmd, shell=True, check=True)
+        except subprocess.CalledProcessError as e:
+            raise ModelSwitchError(
+                f"load command for '{name}' failed (exit {e.returncode}). "
+                f"Is this model downloaded on this machine? Command was: {cmd}"
+            ) from e
         _sanity_check_model_present(base_url, name, log)
     else:
         confirm(DEFAULT_PAUSE_PROMPT.format(model=name))
@@ -93,7 +109,12 @@ def _unload_model(model_cfg: dict, log) -> None:
     unload_cmd = switch.get("unload_cmd")
     if unload_cmd:
         log(f"unloading via: {unload_cmd}")
-        subprocess.run(unload_cmd, shell=True, check=True)
+        try:
+            subprocess.run(unload_cmd, shell=True, check=True)
+        except subprocess.CalledProcessError as e:
+            # Non-fatal: the model's results are already recorded; don't let a
+            # flaky unload throw away a completed benchmark.
+            log(f"WARNING: unload command failed (exit {e.returncode}); continuing")
 
 
 def _sanity_check_model_present(base_url: str, model_name: str, log) -> None:
@@ -206,11 +227,17 @@ def run_benchmark(
         judge_client = get_judge_client(judge_cfg["provider"], judge_cfg["model"])
 
     models = config["models"]
+    skipped_models: list[str] = []
     for i, model_cfg in enumerate(models):
         model_name = model_cfg["name"]
         _check_cancel(f"loading {model_name}")
         log(f"[{i + 1}/{len(models)}] switching to model: {model_name}")
-        _switch_to_model(model_cfg, base_url, unload_all_cmd, log, confirm)
+        try:
+            _switch_to_model(model_cfg, base_url, unload_all_cmd, log, confirm)
+        except ModelSwitchError as e:
+            log(f"SKIPPED [{model_name}]: {e}")
+            skipped_models.append(model_name)
+            continue
 
         ctx = RunContext(
             base_url=base_url,
@@ -349,6 +376,18 @@ def run_benchmark(
         if (model_cfg.get("switch") or {}).get("unload_cmd"):
             log(f"  unloading model: {model_name}")
         _unload_model(model_cfg, log)
+
+    if skipped_models:
+        log(
+            f"NOTE: {len(skipped_models)} model(s) skipped because their load "
+            f"command failed: {', '.join(skipped_models)}"
+        )
+    if not run.models:
+        raise RuntimeError(
+            "no models were benchmarked -- every selected model failed to load. "
+            "Check that the models are downloaded on this machine (use 'Detect "
+            "live models' in the dashboard to see what's actually available)."
+        )
 
     results_dir = config.get("output", {}).get("results_dir", "results")
     path = save_run(run, results_dir=results_dir)
