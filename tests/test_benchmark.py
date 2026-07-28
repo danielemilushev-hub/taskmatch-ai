@@ -3,7 +3,7 @@ from localbench.json_extract import extract_json
 from localbench.hardware import get_hardware_snapshot
 from localbench.results import ProblemResult, SuiteRunResult, ModelRunResult, RunRecord
 from localbench.engine import _has_repetition
-from localbench.gpu_probe import _rocm_smi_json_to_reading
+from localbench.gpu_probe import _rocm_smi_json_to_reading, _ioreg_entries_to_reading, _amd_smi_json_to_reading
 
 class TestLocalbenchCore(unittest.TestCase):
     def test_json_extract_clean(self):
@@ -89,6 +89,54 @@ class TestLocalbenchCore(unittest.TestCase):
         # "unavailable", never a crash or a fabricated number.
         data = {"card0": {"Some Other Field": "1"}}
         self.assertIsNone(_rocm_smi_json_to_reading(data))
+
+    def test_ioreg_entries_to_reading_parses_documented_shape(self):
+        entries = [{"PerformanceStatistics": {"Device Utilization %": 55, "In use system memory": 4 * 1024**3}}]
+        reading = _ioreg_entries_to_reading(entries)
+        self.assertIsNotNone(reading)
+        self.assertEqual(reading["util_percent"], 55.0)
+        self.assertAlmostEqual(reading["used_mb"], 4 * 1024, places=0)
+
+    def test_ioreg_entries_to_reading_survives_malformed_shapes(self):
+        # A real bug this locks in: entries as a bare dict instead of a list
+        # (or an entry that isn't a dict) previously raised AttributeError
+        # uncaught, all the way up through query_gpu() into whichever
+        # background thread called it -- resource_monitor.py's had zero
+        # exception handling around this call at all.
+        self.assertIsNone(_ioreg_entries_to_reading({"not": "a list"}))
+        self.assertIsNone(_ioreg_entries_to_reading(["not a dict", 42]))
+        self.assertIsNone(_ioreg_entries_to_reading([{"PerformanceStatistics": "not a dict"}]))
+        self.assertIsNone(_ioreg_entries_to_reading([{"PerformanceStatistics": {"Device Utilization %": "not-a-number"}}]))
+        self.assertIsNone(_ioreg_entries_to_reading(None))
+        self.assertIsNone(_ioreg_entries_to_reading([]))
+
+    def test_amd_smi_json_to_reading_parses_multi_gpu_list(self):
+        parsed = [
+            {"usage": {"gfx_activity": 30}, "vram_usage": {"vram_used": 2 * 1024**3}},
+            {"usage": {"gfx_activity": 70}, "vram_usage": {"vram_used": 3 * 1024**3}},
+        ]
+        reading = _amd_smi_json_to_reading(parsed)
+        self.assertIsNotNone(reading)
+        self.assertEqual(reading["util_percent"], 70.0)  # busiest GPU
+        self.assertAlmostEqual(reading["used_mb"], 5 * 1024, places=0)  # summed
+
+    def test_amd_smi_json_to_reading_bad_entry_does_not_discard_good_ones(self):
+        # A real bug this locks in: a non-numeric stat on entry 2 previously
+        # raised inside the loop and discarded entry 1's already-valid data,
+        # rather than just skipping the one bad entry.
+        parsed = [
+            {"usage": {"gfx_activity": 40}, "vram_usage": {"vram_used": 4 * 1024**3}},
+            {"usage": {"gfx_activity": "garbage"}, "vram_usage": "not a dict"},
+            "not even a dict",
+        ]
+        reading = _amd_smi_json_to_reading(parsed)
+        self.assertIsNotNone(reading)
+        self.assertEqual(reading["util_percent"], 40.0)
+        self.assertAlmostEqual(reading["used_mb"], 4 * 1024, places=0)
+
+    def test_amd_smi_json_to_reading_returns_none_when_nothing_usable(self):
+        self.assertIsNone(_amd_smi_json_to_reading([{"usage": {}, "vram_usage": {}}]))
+        self.assertIsNone(_amd_smi_json_to_reading(["not a dict"]))
 
     def test_has_repetition_short_threshold_ignores_normal_prose(self):
         # The higher repeat count (6, vs 3-4 for the long-phrase check) is

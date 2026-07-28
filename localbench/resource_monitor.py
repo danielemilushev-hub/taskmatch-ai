@@ -55,7 +55,15 @@ class ResourceMonitor:
         self._thread: threading.Thread | None = None
 
     def _sample_gpu(self) -> None:
-        gpu = query_gpu()
+        try:
+            gpu = query_gpu()
+        except Exception:
+            # query_gpu() is documented to never raise, but this thread has
+            # no supervisor -- if a probe's contract is ever violated (as
+            # gpu_probe.py's macOS probe briefly was), the failure must
+            # degrade to "no GPU sample this tick", not silently kill
+            # tracking for the rest of the suite.
+            return
         if gpu is None:
             return
         used = gpu["used_mb"]
@@ -71,18 +79,31 @@ class ResourceMonitor:
             self._peak_gpu_util = max(self._peak_gpu_util or 0.0, float(util))
 
     def _run(self) -> None:
-        psutil.cpu_percent(interval=None)  # prime the internal counter
-        self._baseline_ram_gb = psutil.virtual_memory().used / (1024**3)
-        self._peak_ram_gb = self._baseline_ram_gb
-        self._sample_gpu()  # baseline, taken before any generation starts
+        try:
+            psutil.cpu_percent(interval=None)  # prime the internal counter
+            self._baseline_ram_gb = psutil.virtual_memory().used / (1024**3)
+            self._peak_ram_gb = self._baseline_ram_gb
+        except Exception:
+            # Observed for real: psutil.swap_memory() has raised RuntimeError
+            # on a real machine here when Windows Performance Counters are
+            # disabled -- an environment issue, not proof CPU/RAM tracking
+            # is broken. Leaves _baseline_ram_gb as None, which summary()
+            # already reports honestly rather than a fabricated delta.
+            pass
+        self._sample_gpu()  # already self-guarded; baseline before generation starts
         last_gpu = time.monotonic()
 
         while not self._stop.is_set():
-            ram_gb = psutil.virtual_memory().used / (1024**3)
-            cpu = psutil.cpu_percent(interval=None)
-            self._peak_ram_gb = max(self._peak_ram_gb, ram_gb)
-            self._peak_cpu_percent = max(self._peak_cpu_percent, cpu)
-            self._cpu_samples.append(cpu)
+            try:
+                ram_gb = psutil.virtual_memory().used / (1024**3)
+                cpu = psutil.cpu_percent(interval=None)
+                self._peak_ram_gb = max(self._peak_ram_gb, ram_gb)
+                self._peak_cpu_percent = max(self._peak_cpu_percent, cpu)
+                self._cpu_samples.append(cpu)
+            except Exception:
+                # One bad tick must not end tracking for the rest of the
+                # suite -- this thread has no supervisor to restart it.
+                pass
 
             now = time.monotonic()
             if now - last_gpu >= _GPU_SAMPLE_INTERVAL_SECONDS:

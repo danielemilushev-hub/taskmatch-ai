@@ -195,6 +195,43 @@ def _rocm_smi_json_to_reading(data: dict) -> dict | None:
     }
 
 
+def _amd_smi_json_to_reading(parsed) -> dict | None:
+    """Pull a reading out of `amd-smi metric --usage --vram-usage --json`
+    output -- a list of one dict per GPU (or a bare dict on a single-GPU
+    box). Never raises: one malformed entry (not a dict, a non-numeric
+    stat) is skipped rather than discarding valid data already gathered
+    from other entries on a multi-GPU box, or propagating past this
+    function -- see the module docstring's verification caveat.
+    """
+    entries = parsed if isinstance(parsed, list) else [parsed]
+    used_mb = 0.0
+    utils: list[float] = []
+    found_any = False
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        usage = entry.get("usage") or {}
+        vram = entry.get("vram_usage") or entry.get("vram") or {}
+        gfx = usage.get("gfx_activity") if isinstance(usage, dict) else None
+        used = vram.get("vram_used") if isinstance(vram, dict) else None
+        try:
+            if gfx is not None:
+                utils.append(float(gfx))
+                found_any = True
+            if used is not None:
+                used_mb += float(used) / (1024**2)
+                found_any = True
+        except (TypeError, ValueError):
+            continue
+    if not found_any:
+        return None
+    return {
+        "used_mb": used_mb if used_mb > 0 else None,
+        "util_percent": _clamp_percent(max(utils)) if utils else None,
+        "source": "amd-smi",
+    }
+
+
 def _probe_rocm() -> dict | None:
     rocm_smi = shutil.which("rocm-smi")
     if rocm_smi:
@@ -220,31 +257,54 @@ def _probe_rocm() -> dict | None:
                 capture_output=True, text=True, timeout=5,
             )
             if proc.returncode == 0 and proc.stdout.strip():
-                parsed = json.loads(proc.stdout)
-                entries = parsed if isinstance(parsed, list) else [parsed]
-                used_mb = 0.0
-                utils: list[float] = []
-                found_any = False
-                for entry in entries:
-                    usage = entry.get("usage") or {}
-                    vram = entry.get("vram_usage") or entry.get("vram") or {}
-                    gfx = usage.get("gfx_activity") if isinstance(usage, dict) else None
-                    used = vram.get("vram_used") if isinstance(vram, dict) else None
-                    if gfx is not None:
-                        utils.append(float(gfx))
-                        found_any = True
-                    if used is not None:
-                        used_mb += float(used) / (1024**2)
-                        found_any = True
-                if found_any:
-                    return {
-                        "used_mb": used_mb if used_mb > 0 else None,
-                        "util_percent": _clamp_percent(max(utils)) if utils else None,
-                        "source": "amd-smi",
-                    }
-        except (subprocess.SubprocessError, json.JSONDecodeError, ValueError, OSError, AttributeError):
+                reading = _amd_smi_json_to_reading(json.loads(proc.stdout))
+                if reading is not None:
+                    return reading
+        except (subprocess.SubprocessError, json.JSONDecodeError, OSError):
             pass
 
+    return None
+
+
+def _ioreg_entries_to_reading(entries) -> dict | None:
+    """Pull a utilization/used-memory reading out of parsed `ioreg -a` plist
+    entries. Never raises: this parses an undocumented, unverified structure
+    (exact key names unconfirmed against real hardware), so anything
+    unexpected -- entries not a list, an entry not a dict, a non-numeric
+    stat -- must degrade to None, the same contract every other probe in
+    this module upholds.
+    """
+    if not entries or not isinstance(entries, list):
+        return None
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        stats = entry.get("PerformanceStatistics")
+        if not isinstance(stats, dict):
+            continue
+        util = None
+        for key in ("Device Utilization %", "GPU Activity(%)", "Utilization %"):
+            if key in stats:
+                util = stats[key]
+                break
+        used_mb = None
+        for key in ("In use system memory", "vramUsedBytes", "gpuVramUsedBytes"):
+            if key in stats:
+                try:
+                    used_mb = float(stats[key]) / (1024**2)
+                except (TypeError, ValueError):
+                    used_mb = None
+                break
+        util_percent = _clamp_percent(util) if util is not None else None
+        # A key being *present* isn't enough -- e.g. a garbage/unparseable
+        # value degrades to None via _clamp_percent, and reporting a
+        # "successful" reading where every field is None would be reporting
+        # nothing while claiming otherwise. Only return once something
+        # actually usable was extracted; otherwise keep looking at the next
+        # entry (there can be more than one accelerator).
+        if util_percent is None and used_mb is None:
+            continue
+        return {"used_mb": used_mb, "util_percent": util_percent, "source": "ioreg"}
     return None
 
 
@@ -268,30 +328,9 @@ def _probe_macos_ioreg() -> dict | None:
             entries = plistlib.loads(proc.stdout)
         except (subprocess.SubprocessError, OSError, plistlib.InvalidFileException):
             continue
-        if not entries:
-            continue
-
-        for entry in entries:
-            stats = entry.get("PerformanceStatistics")
-            if not isinstance(stats, dict):
-                continue
-            util = None
-            for key in ("Device Utilization %", "GPU Activity(%)", "Utilization %"):
-                if key in stats:
-                    util = stats[key]
-                    break
-            if util is None:
-                continue
-            used_mb = None
-            for key in ("In use system memory", "vramUsedBytes", "gpuVramUsedBytes"):
-                if key in stats:
-                    used_mb = float(stats[key]) / (1024**2)
-                    break
-            return {
-                "used_mb": used_mb,
-                "util_percent": _clamp_percent(util),
-                "source": "ioreg",
-            }
+        reading = _ioreg_entries_to_reading(entries)
+        if reading is not None:
+            return reading
     return None
 
 
