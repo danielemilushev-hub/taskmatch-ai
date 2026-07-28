@@ -282,6 +282,7 @@ def run_benchmark(
                     seed=instruction_following_cfg.get("seed", 42),
                     max_tokens=instruction_following_cfg.get("max_tokens"),
                     call_timeout_seconds=instruction_following_cfg.get("call_timeout_seconds"),
+                    detect_loops=instruction_following_cfg.get("detect_loops", False),
                     on_progress=_make_progress_logger(log, model_name, should_cancel=should_cancel, suite_name="instruction_following"),
                 )
             model_result.suites["instruction_following"] = SuiteRunResult(
@@ -317,6 +318,7 @@ def run_benchmark(
                     window_lines=long_context_cfg.get("window_lines", 1000),
                     timeout_seconds=long_context_cfg.get("timeout_seconds", 180),
                     max_tokens=long_context_cfg.get("max_tokens"),
+                    detect_loops=long_context_cfg.get("detect_loops", False),
                     on_progress=_make_progress_logger(log, model_name, should_cancel=should_cancel, suite_name="long_context"),
                 )
             model_result.suites["long_context"] = SuiteRunResult(

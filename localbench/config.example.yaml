@@ -110,6 +110,11 @@ suites:
     seed: 42
     max_tokens: 4096
     call_timeout_seconds: 200
+    # A live transcript on forbidden_letter tasks (avoid a given letter
+    # entirely) showed the model stuck endlessly re-checking individual
+    # words letter-by-letter ("Let's double check 'X' - x-x-x.") instead of
+    # finishing -- the same non-convergent pattern as pattern_reasoning.
+    detect_loops: true
   pattern_reasoning:
     enabled: true
     num_problems: 20
@@ -140,6 +145,10 @@ suites:
     # given generous headroom in response to that real result.
     timeout_seconds: 300
     max_tokens: 4096
+    # A live bug_locator transcript showed the exact same line
+    # ("if a >= 0 and b >= 0:") repeated verbatim 14+ times with only the
+    # line number changing -- a mechanical listing loop, not real analysis.
+    detect_loops: true
     # Optional: path to a real source file on THIS machine to use as the
     # excerpt (more realistic than the bundled synthetic fallback). Left
     # null by default so config.yaml stays generic and safe to commit --

@@ -94,6 +94,26 @@ def _run_one(problem: dict, ctx: RunContext, call_kwargs: dict) -> ProblemResult
             prompt=prompt_val,
         )
 
+    if chat.loop_detected:
+        return ProblemResult(
+            problem_id=problem["id"],
+            passed=False,
+            error=(
+                f"generation aborted after ~{chat.completion_tokens} tokens: "
+                "detected a repetition loop (the model was re-deriving the same "
+                "content rather than converging) -- stopped early instead of "
+                "waiting for max_tokens"
+            ),
+            latency_seconds=chat.latency_seconds,
+            ttft_seconds=chat.ttft_seconds,
+            prompt_tokens=chat.prompt_tokens,
+            completion_tokens=chat.completion_tokens,
+            prompt=prompt_val,
+            response_content=chat.content,
+            reasoning_content=chat.reasoning_content,
+            loop_detected=True,
+        )
+
     if chat.truncated:
         return ProblemResult(
             problem_id=problem["id"],
@@ -135,6 +155,7 @@ def run(
     timeout_seconds: float = 180,
     problems: list[dict] | None = None,
     max_tokens: int | None = None,
+    detect_loops: bool = False,
     on_progress: Callable[[int, int, str, bool], None] | None = None,
 ) -> list[ProblemResult]:
     problems = problems if problems is not None else generate_problems(
@@ -144,6 +165,8 @@ def run(
     call_kwargs = {"timeout_seconds": timeout_seconds}
     if max_tokens is not None:
         call_kwargs["max_tokens"] = max_tokens
+    if detect_loops:
+        call_kwargs["detect_loops"] = True
 
     for idx, problem in enumerate(problems):
         result = _run_one(problem, ctx, call_kwargs)
