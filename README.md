@@ -46,8 +46,14 @@ tokens/sec, a hardware snapshot (CPU/RAM/GPU — best-effort, vendor-generic),
 and peak CPU/RAM/VRAM usage sampled during generation relative to a
 pre-run baseline (a useful signal for whether a model spilled out of VRAM
 into CPU/RAM — see Known Limitations for the VRAM caveat). A failed problem
-is also tagged as `truncated` when it hit the token budget mid-thought,
-distinct from actually answering wrong.
+is tagged distinctly rather than lumped in with a plain wrong answer:
+`truncated` when it hit the token budget mid-thought, or `loop_detected`
+when generation was aborted early because the model got stuck re-deriving
+the same content instead of converging. A model can also pass but be
+flagged `early_exit` — it found a correct, verified answer but never
+stopped talking on its own, a real practical weakness worth knowing about
+separately from raw correctness. See Config notes below for how each of
+these is detected.
 
 **Five of the six suites generate their problems from a seed**, so the exact
 tasks cannot have appeared in any training corpus — the contamination that
@@ -235,9 +241,31 @@ package pointed at OpenRouter's endpoint, so it needs no separate SDK.
   models can spend a large, variable number of hidden "thinking" tokens
   before writing an answer. If the budget/timeout is too low, a response
   gets cut off mid-thought — the harness reports this distinctly as
-  `truncated`, never silently as "wrong answer." The shipped defaults were
-  tuned against a live 12B reasoning model that needed roughly 2-3x the
-  naive default budget on the harder suites.
+  `truncated`, never silently as "wrong answer." The shipped defaults are
+  tiered on live evidence: every legitimate (non-looping) answer observed
+  finished under ~3,200 tokens, but two suites showed genuine, correct,
+  non-repetitive reasoning running past that (one confirmed pass needed
+  6,466) — so the simple suites get 4096 and coding/pattern_reasoning get
+  6144. Raising the cap costs nothing for a fast-converging answer (it's a
+  ceiling, not a wait — generation ends the instant the model stops on its
+  own); it only bounds how long a *stalled* generation runs before giving up.
+- **`detect_loops`** (per suite): some reasoning models get stuck
+  re-deriving the same content instead of converging — a live transcript
+  showed 20,000 completion tokens (2.4x a suite's normal cap) ending in
+  `finish_reason=length` with zero characters of actual answer, all of it
+  spent re-checking the same examples on repeat. This watches the streamed
+  response for that pattern and aborts early instead of waiting out
+  `max_tokens`, reporting it distinctly as `loop_detected` rather than a
+  plain wrong answer or truncation.
+- **`early_exit_check`** (coding suite): a related but different failure —
+  a live transcript showed the model finding fully correct code within the
+  first few hundred tokens, then never stopping, re-verifying it against
+  new self-invented test cases indefinitely. This actually runs the
+  candidate code against the real tests as it streams in, and grades a
+  pass the moment a correct answer exists, rather than penalizing a model
+  for failing to terminate. Reported as `early_exit` (passed, but the model
+  didn't stop on its own) — a real practical weakness worth surfacing
+  separately from raw correctness.
 - **`long_context.source_file`**: optional path to a real file on your
   machine for a more realistic excerpt than the bundled synthetic
   generator. Left `null` by default — if you set a real path, that path
