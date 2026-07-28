@@ -145,6 +145,16 @@ def chat_completion(
     loop_phrase_len: int = 50,
     loop_min_repeats: int = 4,
     loop_min_chars: int = 1500,
+    # A second, independent check for a different loop *shape*: a live
+    # bug_locator transcript repeated the exact same ~21-char condition
+    # ("if a >= 0 and b >= 0:") 14+ times, but wrapped in a line number that
+    # changed every time -- no 50-char exact span ever recurred, so the
+    # check above completely missed it. A short phrase alone would be too
+    # promiscuous (ordinary prose reuses short fragments by chance), so the
+    # min-repeat count is raised instead of the phrase length -- six-plus
+    # verbatim repeats of even a short, specific span is not a coincidence.
+    loop_short_phrase_len: int = 18,
+    loop_short_min_repeats: int = 6,
     # Suite-supplied, suite-graded check: given the combined reasoning+content
     # text so far, return True if it already contains a correct, verified
     # answer. Unlike loop detection (a fuzzy text-repetition heuristic), this
@@ -285,6 +295,11 @@ def chat_completion(
                     combined_text = "".join(reasoning_parts) + "".join(content_parts)
                     if _has_repetition(
                         combined_text, loop_window_chars, loop_phrase_len, loop_min_repeats
+                    ) or _has_repetition(
+                        combined_text,
+                        loop_window_chars,
+                        loop_short_phrase_len,
+                        loop_short_min_repeats,
                     ):
                         loop_detected = True
                         finish_reason = "loop_detected"

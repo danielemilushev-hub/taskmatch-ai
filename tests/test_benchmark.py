@@ -60,5 +60,29 @@ class TestLocalbenchCore(unittest.TestCase):
     def test_has_repetition_short_text_is_never_a_loop(self):
         self.assertFalse(_has_repetition("too short to loop", window_chars=4000, phrase_len=40, min_repeats=3))
 
+    def test_has_repetition_short_dense_phrase_wrapped_in_varying_context(self):
+        # A live bug_locator transcript repeated the exact same ~21-char
+        # condition ("if a >= 0 and b >= 0:") 14+ times, but each occurrence
+        # was wrapped in a line number that changed every time -- no 40+
+        # char exact span ever recurred, so the long-phrase check alone
+        # missed this. A shorter phrase length with a higher repeat count
+        # catches it instead.
+        lines = "\n".join(
+            f"*   Line {666 + i * 4}: `if a >= 0 and b >= 0:`" for i in range(8)
+        )
+        self.assertTrue(_has_repetition(lines, window_chars=1200, phrase_len=18, min_repeats=6))
+
+    def test_has_repetition_short_threshold_ignores_normal_prose(self):
+        # The higher repeat count (6, vs 3-4 for the long-phrase check) is
+        # what keeps this from false-positiving on ordinary text: normal
+        # prose reuses short generic fragments by chance sometimes, but not
+        # six-plus times verbatim in a narrow window.
+        text = (
+            "The function should return the correct value. Let's check the "
+            "output. The output looks correct here. Let's check the next "
+            "case. The result is what we expect for this input."
+        )
+        self.assertFalse(_has_repetition(text, window_chars=1200, phrase_len=18, min_repeats=6))
+
 if __name__ == "__main__":
     unittest.main()
