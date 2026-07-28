@@ -1,9 +1,14 @@
 """Job suite: HumanEval-style coding problems, executed in a sandboxed subprocess.
 
-"Sandboxed" here means: the model's generated code runs in its own throwaway
-subprocess with a hard wall-clock timeout and no shared state with this
-process -- not full OS-level isolation (no seccomp/cgroups/chroot). That's a
-deliberate, documented limitation on Windows; see README.
+"Sandboxed" here means accident containment, not a hard security boundary
+(no seccomp/cgroups/chroot). The layers, in order: the candidate runs in its
+own throwaway subprocess started with `-I` (isolated mode) inside a temp
+directory; a parent-side watchdog enforces a wall-clock timeout and a
+memory cap (kills the process if RSS exceeds _MEM_LIMIT_MB); the runner
+script disables socket creation before the candidate code loads, and on
+POSIX additionally sets an RLIMIT_AS address-space cap. A determined
+adversary could bypass the in-process guards; a confused local model
+emitting an accidental memory bomb or a stray network call cannot.
 """
 
 from __future__ import annotations
@@ -13,8 +18,11 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Callable
+
+import psutil
 
 from ..data.coding_problems import PROBLEMS
 from ..data.generated_coding_problems import generate_problems
@@ -29,10 +37,31 @@ SYSTEM_PROMPT = (
 
 _RESULT_MARKER = "###LOCALBENCH_RESULTS###"
 
+# Memory cap for candidate code. Generous for list/string-crunching problems
+# (reference solutions peak well under 100MB) while still small enough that a
+# runaway allocator gets killed long before it can push the host into swap.
+_MEM_LIMIT_MB = 512
+
 _FENCE_RE = re.compile(r"```(?:python)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
 
 _RUNNER_TEMPLATE = '''\
 import json
+
+# --- sandbox guards: accident containment, not a hard security boundary ---
+# Block network use (a local model has no business phoning anywhere from a
+# math problem) and, on POSIX, cap the address space as a second layer
+# behind the parent-side memory watchdog.
+import socket as _socket
+def _localbench_no_net(*_a, **_k):
+    raise OSError("network access is disabled inside the localbench sandbox")
+_socket.socket = _localbench_no_net
+_socket.create_connection = _localbench_no_net
+try:
+    import resource as _resource
+    _resource.setrlimit(_resource.RLIMIT_AS, ({mem_bytes}, {mem_bytes}))
+except Exception:
+    pass
+# ---------------------------------------------------------------------------
 
 {code}
 
@@ -91,27 +120,58 @@ def _execute_candidate(
         tests_repr=repr(problem["tests"]),
         entry_point=problem["entry_point"],
         marker=_RESULT_MARKER,
+        mem_bytes=_MEM_LIMIT_MB * 1024 * 1024,
     )
 
     with tempfile.TemporaryDirectory(prefix="localbench_") as tmpdir:
         script_path = Path(tmpdir) / "candidate.py"
         script_path.write_text(script, encoding="utf-8")
 
+        # -I: isolated mode -- ignores PYTHON* env vars, user site-packages,
+        # and the script directory on sys.path. Popen instead of run() so a
+        # parent-side watchdog can enforce a memory cap portably (the POSIX
+        # rlimit in the runner template doesn't exist on Windows).
+        proc = subprocess.Popen(
+            [sys.executable, "-I", str(script_path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=tmpdir,
+        )
         try:
-            proc = subprocess.run(
-                [sys.executable, str(script_path)],
-                capture_output=True,
-                text=True,
-                timeout=timeout_seconds,
-                cwd=tmpdir,
-            )
-        except subprocess.TimeoutExpired:
-            return None, f"execution timed out after {timeout_seconds}s"
+            ps_handle = psutil.Process(proc.pid)
+        except psutil.NoSuchProcess:
+            ps_handle = None
 
-    if _RESULT_MARKER not in proc.stdout:
-        return None, f"sandbox process crashed before producing results: {proc.stderr[-500:]}"
+        kill_reason = None
+        deadline = time.monotonic() + timeout_seconds
+        while proc.poll() is None:
+            if time.monotonic() > deadline:
+                kill_reason = f"execution timed out after {timeout_seconds}s"
+                break
+            if ps_handle is not None:
+                try:
+                    if ps_handle.memory_info().rss > _MEM_LIMIT_MB * 1024 * 1024:
+                        kill_reason = (
+                            f"killed: candidate exceeded the {_MEM_LIMIT_MB}MB "
+                            "sandbox memory limit"
+                        )
+                        break
+                except psutil.NoSuchProcess:
+                    break
+            time.sleep(0.05)
 
-    results_json = proc.stdout.split(_RESULT_MARKER, 1)[1].strip()
+        if kill_reason is not None:
+            proc.kill()
+            proc.wait(timeout=10)
+            return None, kill_reason
+
+        stdout, stderr = proc.communicate()
+
+    if _RESULT_MARKER not in stdout:
+        return None, f"sandbox process crashed before producing results: {stderr[-500:]}"
+
+    results_json = stdout.split(_RESULT_MARKER, 1)[1].strip()
     try:
         test_results = json.loads(results_json)
     except json.JSONDecodeError:
