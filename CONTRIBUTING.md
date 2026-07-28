@@ -72,11 +72,21 @@ code.
    execution. If a task can only be graded by judgement, it belongs in the
    frontier-graded suite, not here.
 
-Handle these three outcomes distinctly, never collapsing them into "failed":
+Handle these outcomes distinctly, never collapsing them into a plain "failed":
 
 - the call failed (network/timeout) → `error`, no `truncated`
 - the response hit the token budget → `truncated=True`
+- generation was aborted early on suspicion of a repetition loop (opt-in via
+  `detect_loops`; see `engine._has_repetition`) → `loop_detected=True`
 - the model answered, and the answer was wrong → `error` describing the diff
+- the model found a correct, already-verified answer but never stopped
+  generating on its own (suite-specific; see `coding_suite.py`'s
+  `early_exit_check` for the pattern) → `passed=True, early_exit=True`
+
+`loop_detected` is a text-repetition heuristic (real false-positive risk —
+tune conservatively and validate live before trusting it). `early_exit` is
+grounded in the suite's own real grading (e.g. actually running candidate
+code against tests), not a heuristic, so it's safe to default on.
 
 ## Frontend
 
