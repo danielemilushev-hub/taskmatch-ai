@@ -41,6 +41,8 @@ ALL_SUITES = [
     "instruction_following",
     "pattern_reasoning",
     "long_context",
+    "tool_calling",
+    "multi_turn",
 ]
 
 
@@ -67,27 +69,10 @@ def index() -> FileResponse:
 
 def _get_suite_task_count(name: str, config: dict) -> int:
     s_cfg = config.get("suites", {}).get(name, {})
-    if "num_problems" in s_cfg:
-        return s_cfg["num_problems"]
-    if name == "json_schema":
-        try:
-            from localbench.data.json_schema_problems import PROBLEMS
-            return len(PROBLEMS)
-        except Exception:
-            return 5
-    if name == "coding":
-        try:
-            from localbench.data.coding_problems import PROBLEMS
-            return len(PROBLEMS)
-        except Exception:
-            return 8
-    defaults = {
-        "logic_math": 20,
-        "instruction_following": 16,
-        "pattern_reasoning": 10,
-        "long_context": 4,
-    }
-    return defaults.get(name, 0)
+    count = problems_for(name, "full", s_cfg.get("num_problems"))
+    if count is not None:
+        return count
+    return s_cfg.get("num_problems", 0)
 
 
 @app.get("/api/config")

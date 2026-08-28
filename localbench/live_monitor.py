@@ -37,7 +37,10 @@ class LiveHardwareMonitor:
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
-        self._last_disk_io = psutil.disk_io_counters()
+        try:
+            self._last_disk_io = psutil.disk_io_counters()
+        except Exception:
+            self._last_disk_io = None
         self._last_disk_time = time.monotonic()
         self._tick = 0
         self._last_gpu: dict | None = None
@@ -85,10 +88,17 @@ class LiveHardwareMonitor:
             swap_percent = None
 
         now = time.monotonic()
-        disk_io = psutil.disk_io_counters()
-        elapsed = max(now - self._last_disk_time, 0.001)
-        read_bytes_sec = (disk_io.read_bytes - self._last_disk_io.read_bytes) / elapsed
-        write_bytes_sec = (disk_io.write_bytes - self._last_disk_io.write_bytes) / elapsed
+        try:
+            disk_io = psutil.disk_io_counters()
+        except Exception:
+            disk_io = None
+
+        read_bytes_sec = 0.0
+        write_bytes_sec = 0.0
+        if disk_io is not None and self._last_disk_io is not None:
+            elapsed = max(now - self._last_disk_time, 0.001)
+            read_bytes_sec = max(0.0, (disk_io.read_bytes - self._last_disk_io.read_bytes) / elapsed)
+            write_bytes_sec = max(0.0, (disk_io.write_bytes - self._last_disk_io.write_bytes) / elapsed)
         self._last_disk_io = disk_io
         self._last_disk_time = now
 

@@ -22,6 +22,8 @@ PROFILE_SIZES: dict[str, tuple[int, int]] = {
     "instruction_following": (12, 24),
     "pattern_reasoning": (10, 20),
     "long_context": (4, 8),
+    "tool_calling": (8, 16),
+    "multi_turn": (6, 12),
 }
 
 PROFILES = ("quick", "full")

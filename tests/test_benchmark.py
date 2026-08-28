@@ -150,5 +150,41 @@ class TestLocalbenchCore(unittest.TestCase):
         )
         self.assertFalse(_has_repetition(text, window_chars=1200, phrase_len=18, min_repeats=6))
 
+    def test_live_hardware_monitor_null_disk_io_survives(self):
+        from unittest.mock import patch
+        from localbench.live_monitor import LiveHardwareMonitor
+
+        mon = LiveHardwareMonitor(interval=0.1)
+        with patch("psutil.disk_io_counters", return_value=None):
+            sample = mon._collect()
+            self.assertIn("cpu_percent", sample)
+            self.assertEqual(sample["disk_read_mb_s"], 0.0)
+            self.assertEqual(sample["disk_write_mb_s"], 0.0)
+
+    def test_profiles_include_all_deterministic_suites(self):
+        from localbench.profiles import PROFILE_SIZES, problems_for
+        self.assertIn("tool_calling", PROFILE_SIZES)
+        self.assertIn("multi_turn", PROFILE_SIZES)
+        self.assertEqual(problems_for("tool_calling", "quick"), 8)
+        self.assertEqual(problems_for("tool_calling", "full"), 16)
+        self.assertEqual(problems_for("multi_turn", "quick"), 6)
+        self.assertEqual(problems_for("multi_turn", "full"), 12)
+
+    def test_tool_calling_problem_generator(self):
+        from localbench.data.tool_calling_problems import generate_tool_calling_problems
+        problems = generate_tool_calling_problems(num_problems=10, seed=42)
+        self.assertEqual(len(problems), 10)
+        self.assertTrue(any(p["is_negative"] for p in problems))
+        self.assertTrue(any(not p["is_negative"] for p in problems))
+
+    def test_multi_turn_problem_generator(self):
+        from localbench.data.multi_turn_problems import generate_multi_turn_problems
+        problems = generate_multi_turn_problems(num_problems=10, seed=42)
+        self.assertEqual(len(problems), 10)
+        for p in problems:
+            self.assertGreaterEqual(len(p["turns"]), 3)
+
+
 if __name__ == "__main__":
     unittest.main()
+

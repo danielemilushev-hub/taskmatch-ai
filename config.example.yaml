@@ -155,6 +155,18 @@ suites:
     # if you set this to a real path, it'll reveal that path if you commit
     # this file, so consider keeping that edit local/uncommitted.
     source_file: null
+  tool_calling:
+    enabled: true
+    num_problems: 16
+    seed: 42
+    max_tokens: 2048
+    call_timeout_seconds: 180
+  multi_turn:
+    enabled: true
+    num_problems: 12
+    seed: 42
+    max_tokens: 2048
+    call_timeout_seconds: 180
 
 sampling:
   temperature: 0.2

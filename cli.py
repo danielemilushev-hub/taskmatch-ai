@@ -23,6 +23,8 @@ ALL_SUITES = [
     "instruction_following",
     "pattern_reasoning",
     "long_context",
+    "tool_calling",
+    "multi_turn",
 ]
 
 

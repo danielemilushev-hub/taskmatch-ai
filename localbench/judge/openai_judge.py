@@ -21,11 +21,19 @@ class OpenAIJudge(JudgeClient):
         self._client = openai.OpenAI(api_key=api_key)
 
     def chat(self, messages: list[dict[str, str]], max_tokens: int = 1024) -> JudgeChatResult:
-        resp = self._client.chat.completions.create(
-            model=self.model,
-            max_completion_tokens=max_tokens,
-            messages=messages,
-        )
+        try:
+            resp = self._client.chat.completions.create(
+                model=self.model,
+                max_completion_tokens=max_tokens,
+                messages=messages,
+            )
+        except Exception:
+            # Fallback for endpoints/models that reject max_completion_tokens in favor of max_tokens
+            resp = self._client.chat.completions.create(
+                model=self.model,
+                max_tokens=max_tokens,
+                messages=messages,
+            )
         usage = resp.usage
         return JudgeChatResult(
             text=resp.choices[0].message.content or "",

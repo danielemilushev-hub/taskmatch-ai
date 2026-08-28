@@ -106,7 +106,9 @@ const SUITE_DESCRIPTIONS = {
   logic_math: "logic_math — synthetic arithmetic and logic puzzles generated dynamically (exact match ground truth). Tests basic reasoning without needing outside knowledge.",
   instruction_following: "instruction_following — asks for text following precise mechanical constraints (exact 3 paragraphs, no letter 'e', ends with specific phrase). Graded by literally counting/checking output.",
   pattern_reasoning: "pattern_reasoning — small abstract grid-transformation puzzles (infer rule from 2 examples, apply to new grid). Hardest, most abstract-reasoning-heavy suite by design.",
-  long_context: "long_context — a real 1000+ line source file excerpt with a planted 'needle' value to retrieve or a mechanically injected bug to locate by line number. Tests context retention."
+  long_context: "long_context — a real 1000+ line source file excerpt with a planted 'needle' value to retrieve or a mechanically injected bug to locate by line number. Tests context retention.",
+  tool_calling: "tool_calling — tests OpenAI-compatible function calling, JSON parameter schema validation, and negative control tool refusal.",
+  multi_turn: "multi_turn — evaluates conversational memory, entity-attribute binding, and persistent constraint retention across 3–5 dialogue turns."
 };
 
 // ---------- New Run ----------
@@ -345,6 +347,18 @@ const SUITE_METADATA = {
     title: "Long Context",
     description: "Needle-in-haystack and bug-location retrieval across a long real document.",
     info: "long_context — a real 1000+ line source file excerpt with a planted 'needle' value to retrieve or a mechanically injected bug to locate by line number. Tests context retention.",
+  },
+  tool_calling: {
+    icon: "🛠️",
+    title: "Tool & Function Calling",
+    description: "Evaluates function selection, JSON argument schema compliance, and refusal on negative controls.",
+    info: "tool_calling — tests OpenAI-compatible function calling, JSON parameter schema validation, and negative control tool refusal.",
+  },
+  multi_turn: {
+    icon: "💬",
+    title: "Multi-Turn Context",
+    description: "Evaluates conversational memory, entity binding, and persistent constraint retention across multi-turn chat.",
+    info: "multi_turn — evaluates conversational memory, entity-attribute binding, and persistent constraint retention across 3–5 dialogue turns.",
   },
 };
 
@@ -1584,6 +1598,10 @@ async function loadRunList() {
         await api(`/api/runs/${run.run_id}`, { method: "DELETE" });
         state.selectedCompareRuns.delete(run.run_id);
         compareRunCache.delete(run.run_id);
+        if (state.baselineRunId === run.run_id) {
+          state.baselineRunId = null;
+          state.baselineModelName = null;
+        }
         if (state.currentRunData?.run_id === run.run_id) {
           state.currentRunData = null;
           document.getElementById("run-detail-card").style.display = "none";
@@ -2062,7 +2080,7 @@ document.getElementById("pg-run").addEventListener("click", async () => {
 const SERIES_COLORS = ["--series-1", "--series-2", "--series-3", "--series-4"];
 const compareRunCache = new Map();
 const DETERMINISTIC_SUITE_ORDER = [
-  "json_schema", "coding", "logic_math", "instruction_following", "pattern_reasoning", "long_context",
+  "json_schema", "coding", "logic_math", "instruction_following", "pattern_reasoning", "long_context", "tool_calling", "multi_turn",
 ];
 
 function seriesColor(index) {
@@ -2986,6 +3004,7 @@ function exportCompareCSV(series, categories, runs) {
 
 // ---------- Radar / Spider Chart ----------
 function buildRadarChart(series, categories, getSuite) {
+  if (!categories || categories.length < 3) return null;
   const wrap = document.createElement("div");
   wrap.className = "card";
 
@@ -3332,7 +3351,8 @@ async function renderCompare() {
     }
 
     output.appendChild(buildParetoChart(activeSeries, categories, getSuite, allSeries));
-    output.appendChild(buildRadarChart(activeSeries, categories, getSuite, allSeries));
+    const radarChart = buildRadarChart(activeSeries, categories, getSuite, allSeries);
+    if (radarChart) output.appendChild(radarChart);
   } else if (state.compareSubTab === "charts") {
     output.appendChild(
       buildBarChart({

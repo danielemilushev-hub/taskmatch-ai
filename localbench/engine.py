@@ -68,6 +68,7 @@ class ChatResult:
     # model wouldn't stop talking would be inaccurate. See coding_suite.py's
     # early-exit checker for how the "already correct" judgment is made.
     early_exit: bool = False
+    tool_calls: list[dict[str, Any]] | None = None
     raw: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -225,6 +226,7 @@ def chat_completion(
 
     content_parts: list[str] = []
     reasoning_parts: list[str] = []
+    tool_call_chunks: dict[int, dict[str, Any]] = {}
     finish_reason = None
     usage: dict = {}
     ttft: float | None = None
@@ -253,13 +255,31 @@ def chat_completion(
                 delta = choices[0].get("delta", {})
                 piece_content = delta.get("content")
                 piece_reasoning = delta.get("reasoning_content")
-                if ttft is None and (piece_content or piece_reasoning):
+                piece_tool_calls = delta.get("tool_calls")
+                if ttft is None and (piece_content or piece_reasoning or piece_tool_calls):
                     ttft = time.perf_counter() - start
                 if piece_content:
                     content_parts.append(piece_content)
                     token_estimate += 1
                 if piece_reasoning:
                     reasoning_parts.append(piece_reasoning)
+                    token_estimate += 1
+                if piece_tool_calls:
+                    for tc in piece_tool_calls:
+                        idx = tc.get("index", 0)
+                        if idx not in tool_call_chunks:
+                            tool_call_chunks[idx] = {
+                                "id": tc.get("id") or "",
+                                "type": tc.get("type") or "function",
+                                "function": {"name": "", "arguments": ""},
+                            }
+                        if tc.get("id"):
+                            tool_call_chunks[idx]["id"] = tc["id"]
+                        fn = tc.get("function") or {}
+                        if fn.get("name"):
+                            tool_call_chunks[idx]["function"]["name"] += fn["name"]
+                        if fn.get("arguments"):
+                            tool_call_chunks[idx]["function"]["arguments"] += fn["arguments"]
                     token_estimate += 1
                 if choices[0].get("finish_reason"):
                     finish_reason = choices[0]["finish_reason"]
@@ -329,10 +349,17 @@ def chat_completion(
         # OpenAI-compatible APIs.
         completion_tokens = token_estimate
 
+    final_tool_calls = (
+        [tool_call_chunks[k] for k in sorted(tool_call_chunks.keys())]
+        if tool_call_chunks
+        else None
+    )
+
     return ChatResult(
         success=True,
         content="".join(content_parts),
         reasoning_content="".join(reasoning_parts) or None,
+        tool_calls=final_tool_calls,
         finish_reason=finish_reason,
         latency_seconds=latency,
         ttft_seconds=ttft,

@@ -29,7 +29,9 @@ from .suites import (
     json_schema_suite,
     logic_math_suite,
     long_context_suite,
+    multi_turn_suite,
     pattern_reasoning_suite,
+    tool_calling_suite,
 )
 
 class RunCancelled(Exception):
@@ -358,6 +360,40 @@ def run_benchmark(
                 suite="long_context", problems=problems, resource_usage=mon.summary()
             )
 
+        tool_calling_cfg = suites_cfg.get("tool_calling", {})
+        if tool_calling_cfg.get("enabled", True):
+            log(f"  [{model_name}] running tool_calling suite...")
+            with ResourceMonitor() as mon:
+                problems = tool_calling_suite.run(
+                    ctx,
+                    num_problems=tool_calling_cfg.get("num_problems", 16),
+                    seed=tool_calling_cfg.get("seed", 42),
+                    config=tool_calling_cfg,
+                    on_progress=_make_progress_logger(
+                        log, model_name, should_cancel=should_cancel, on_stats=on_stats, suite_name="tool_calling"
+                    ),
+                )
+            model_result.suites["tool_calling"] = SuiteRunResult(
+                suite="tool_calling", problems=problems, resource_usage=mon.summary()
+            )
+
+        multi_turn_cfg = suites_cfg.get("multi_turn", {})
+        if multi_turn_cfg.get("enabled", True):
+            log(f"  [{model_name}] running multi_turn suite...")
+            with ResourceMonitor() as mon:
+                problems = multi_turn_suite.run(
+                    ctx,
+                    num_problems=multi_turn_cfg.get("num_problems", 12),
+                    seed=multi_turn_cfg.get("seed", 42),
+                    config=multi_turn_cfg,
+                    on_progress=_make_progress_logger(
+                        log, model_name, should_cancel=should_cancel, on_stats=on_stats, suite_name="multi_turn"
+                    ),
+                )
+            model_result.suites["multi_turn"] = SuiteRunResult(
+                suite="multi_turn", problems=problems, resource_usage=mon.summary()
+            )
+
         if judge_client is not None:
             log(f"  [{model_name}] running frontier_graded suite (paid, non-deterministic)...")
             problems = frontier_graded_suite.run(
@@ -366,6 +402,9 @@ def run_benchmark(
                 num_tasks=judge_cfg.get("num_tasks", 6),
                 categories=judge_cfg.get("categories"),
                 pass_threshold=judge_cfg.get("pass_threshold", 7),
+                on_progress=_make_progress_logger(
+                    log, model_name, should_cancel=should_cancel, on_stats=on_stats, suite_name="frontier_graded"
+                ),
             )
             model_result.suites["frontier_graded"] = SuiteRunResult(
                 suite="frontier_graded", problems=problems

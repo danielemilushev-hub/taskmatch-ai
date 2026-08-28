@@ -162,14 +162,23 @@ def _gpu_info_windows_registry() -> list[dict] | None:
         raw_bytes = entry.get("Bytes")
         if not raw_bytes:
             continue
+        try:
+            bytes_int = int(raw_bytes)
+        except (ValueError, TypeError):
+            bytes_int = 0
         gpus.append(
-            {
-                "name": entry.get("Name") or "unknown",
-                "memory": f"{round(int(raw_bytes) / (1024**3), 2)} GB",
-                "source": "windows_registry",
-            }
+            (
+                bytes_int,
+                {
+                    "name": entry.get("Name") or "unknown",
+                    "memory": f"{round(bytes_int / (1024**3), 2)} GB",
+                    "source": "windows_registry",
+                },
+            )
         )
-    return gpus or None
+    # Sort descending by VRAM so primary discrete GPU is prioritized
+    gpus.sort(key=lambda x: x[0], reverse=True)
+    return [g[1] for g in gpus] or None
 
 
 def _gpu_info_windows_wmi() -> list[dict] | None:
@@ -199,19 +208,23 @@ def _gpu_info_windows_wmi() -> list[dict] | None:
 
     gpus = []
     for entry in data:
-        ram_bytes = entry.get("AdapterRAM")
+        ram_bytes = entry.get("AdapterRAM") or 0
         gpus.append(
-            {
-                "name": entry.get("Name", "unknown"),
-                "memory_approx": (
-                    f"{round(ram_bytes / (1024**3), 2)} GB (WMI-reported, may be inaccurate)"
-                    if ram_bytes
-                    else "unknown"
-                ),
-                "source": "windows_wmi",
-            }
+            (
+                ram_bytes,
+                {
+                    "name": entry.get("Name", "unknown"),
+                    "memory_approx": (
+                        f"{round(ram_bytes / (1024**3), 2)} GB (WMI-reported, may be inaccurate)"
+                        if ram_bytes
+                        else "unknown"
+                    ),
+                    "source": "windows_wmi",
+                },
+            )
         )
-    return gpus or None
+    gpus.sort(key=lambda x: x[0], reverse=True)
+    return [g[1] for g in gpus] or None
 
 
 def _gpu_info_macos() -> list[dict] | None:
