@@ -75,24 +75,105 @@ def _make_progress_logger(log, model_name: str, suite_name: str, should_cancel=N
     return on_progress
 
 
-def _switch_to_model(model_cfg: dict, base_url: str, unload_all_cmd: str | None, log, confirm) -> None:
+def _build_runtime_load_cmd(model_cfg: dict) -> str | None:
     switch = model_cfg.get("switch") or {}
-    load_cmd = switch.get("load_cmd")
     name = model_cfg["name"]
+    load_cmd = switch.get("load_cmd")
+    flavor = model_cfg.get("runtime_flavor")
+
+    ctx_len = model_cfg.get("context_length")
+    kv = model_cfg.get("gpu_kv")
+    gpu = model_cfg.get("gpu_offload")
+    fa = model_cfg.get("flash_attention")
+    mmap = model_cfg.get("mmap")
+    mlock = model_cfg.get("mlock")
+    batch = model_cfg.get("batch_size")
+    split = model_cfg.get("split_mode")
+    parallel = model_cfg.get("parallel")
 
     if load_cmd:
-        # Some runtimes (e.g. LM Studio's `lms load`) will stack a second
-        # instance of a model instead of reusing an already-loaded one, so
-        # always start from a clean slate before loading the target model.
+        cmd = load_cmd.format(model=name)
+        if cmd.startswith("lms ") or "lms.exe" in cmd:
+            if ctx_len and "-c " not in cmd and "--context-length" not in cmd:
+                cmd += f" -c {ctx_len}"
+            if parallel and "--parallel" not in cmd:
+                cmd += f" --parallel {parallel}"
+            return cmd
+
+        if ctx_len and "-c " not in cmd and "--context-length" not in cmd and "--max-model-len" not in cmd:
+            cmd += f" -c {ctx_len}"
+        if parallel and "-np " not in cmd and "--parallel" not in cmd and "--max-num-seqs" not in cmd:
+            cmd += f" -np {parallel}"
+        if kv and "--gpu-kv" not in cmd and "-ctk" not in cmd and "--kv-cache-dtype" not in cmd:
+            cmd += f" -ctk {kv} -ctv {kv}"
+        if fa is True and "--flash-attention" not in cmd and "-fa" not in cmd:
+            cmd += " -fa"
+        if mmap is False and "--no-mmap" not in cmd:
+            cmd += " --no-mmap"
+        if mlock is True and "--mlock" not in cmd:
+            cmd += " --mlock"
+        if batch and "-b " not in cmd:
+            cmd += f" -b {batch}"
+        return cmd
+
+    if flavor == "lmstudio" or (not flavor and shutil.which("lms")):
+        gpu_val = gpu if gpu is not None else "max"
+        cmd = f'lms load "{name}" -y --gpu {gpu_val}'
+        if ctx_len:
+            cmd += f" -c {ctx_len}"
+        if parallel:
+            cmd += f" --parallel {parallel}"
+        if model_cfg.get("speculative_draft_mtp"):
+            cmd += " --speculative-draft-mtp"
+        return cmd
+
+    if flavor == "llamacpp":
+        ngl = model_cfg.get("gpu_offload_layers", 99)
+        cmd = f'llama-server -m "{name}" -ngl {ngl}'
+        if ctx_len:
+            cmd += f" -c {ctx_len}"
+        if parallel:
+            cmd += f" -np {parallel}"
+        if kv and kv != "f16":
+            cmd += f" -ctk {kv} -ctv {kv}"
+        if fa is True:
+            cmd += " -fa"
+        if mmap is False:
+            cmd += " --no-mmap"
+        if mlock is True:
+            cmd += " --mlock"
+        if batch:
+            cmd += f" -b {batch}"
+        if split:
+            cmd += f" -sm {split}"
+        return cmd
+
+    if flavor == "vllm":
+        gpu_util = gpu if (gpu and isinstance(gpu, (int, float))) else 0.95
+        cmd = f'vllm serve "{name}" --gpu-memory-utilization {gpu_util}'
+        if ctx_len:
+            cmd += f" --max-model-len {ctx_len}"
+        if parallel:
+            cmd += f" --max-num-seqs {parallel}"
+        if kv and kv != "f16":
+            cmd += f" --kv-cache-dtype {kv}"
+        return cmd
+
+    return None
+
+
+def _switch_to_model(model_cfg: dict, base_url: str, unload_all_cmd: str | None, log, confirm) -> None:
+    name = model_cfg["name"]
+    cmd = _build_runtime_load_cmd(model_cfg)
+
+    if cmd:
         if unload_all_cmd:
             log(f"clearing loaded models via: {unload_all_cmd}")
             try:
                 subprocess.run(unload_all_cmd, shell=True, check=True)
             except subprocess.CalledProcessError as e:
-                # Non-fatal: often just means nothing was loaded to unload.
                 log(f"WARNING: unload-all command failed (exit {e.returncode}); continuing")
 
-        cmd = load_cmd.format(model=name)
         log(f"loading '{name}' via: {cmd}")
         try:
             subprocess.run(cmd, shell=True, check=True)
@@ -241,17 +322,37 @@ def run_benchmark(
             skipped_models.append(model_name)
             continue
 
+        model_sampling = model_cfg.get("sampling") or {}
+        effective_temp = model_sampling.get("temperature", sampling.get("temperature", 0.2))
+        effective_max_tokens = model_sampling.get("max_tokens", sampling.get("max_tokens", 1024))
+
         ctx = RunContext(
             base_url=base_url,
             model=model_name,
             api_key=api_key,
             timeout_seconds=timeout_seconds,
-            temperature=sampling.get("temperature", 0.2),
-            max_tokens=sampling.get("max_tokens", 1024),
+            temperature=effective_temp,
+            max_tokens=effective_max_tokens,
         )
 
+        runtime_info = _capture_lms_load_info(model_name) or {}
+        for k in [
+            "context_length",
+            "gpu_kv",
+            "flash_attention",
+            "mmap",
+            "mlock",
+            "batch_size",
+            "split_mode",
+            "runtime_flavor",
+            "gpu_offload",
+            "backend",
+        ]:
+            if model_cfg.get(k) is not None:
+                runtime_info[k] = model_cfg[k]
+
         model_result = ModelRunResult(
-            model=model_name, runtime_load_info=_capture_lms_load_info(model_name)
+            model=model_name, runtime_load_info=runtime_info or None
         )
 
         json_schema_cfg = suites_cfg.get("json_schema", {})

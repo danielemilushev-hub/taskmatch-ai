@@ -58,16 +58,43 @@ _CIM_SCRIPT = r"""
 $ErrorActionPreference = 'SilentlyContinue'
 $mem = Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUAdapterMemory
 $eng = Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine
-$util = 0
-if ($eng) {
-  $perType = $eng | Group-Object { ($_.Name -split 'engtype_')[-1] } | ForEach-Object {
-    ($_.Group | Measure-Object -Property UtilizationPercentage -Sum).Sum
-  }
-  $util = ($perType | Measure-Object -Maximum).Maximum
+
+$luidList = @()
+foreach ($m in $mem) {
+    if ($m.Name -match '(luid_0x[0-9a-fA-F]+_0x[0-9a-fA-F]+)') {
+        $luid = $matches[1]
+        if ($luidList -notcontains $luid) {
+            $luidList += $luid
+        }
+    }
 }
+
+$adapters = @()
+foreach ($luid in $luidList) {
+    $used = ($mem | Where-Object { $_.Name -like "*$luid*" } | Measure-Object -Property DedicatedUsage -Sum).Sum
+    $lEng = $eng | Where-Object { $_.Name -like "*$luid*" }
+    $util = 0
+    if ($lEng) {
+        $perType = $lEng | Group-Object { ($_.Name -split 'engtype_')[-1] } | ForEach-Object {
+            ($_.Group | Measure-Object -Property UtilizationPercentage -Sum).Sum
+        }
+        $util = ($perType | Measure-Object -Maximum).Maximum
+    }
+    $adapters += [PSCustomObject]@{
+        luid = $luid
+        used_bytes = [double]$used
+        util = [double]$util
+    }
+}
+
+$adapters = @($adapters | Sort-Object -Property used_bytes -Descending)
+$totalUsed = ($mem | Measure-Object -Property DedicatedUsage -Sum).Sum
+$maxUtil = ($adapters | Measure-Object -Property util -Maximum).Maximum
+
 [PSCustomObject]@{
-  used_bytes = [double](($mem | Measure-Object -Property DedicatedUsage -Sum).Sum)
-  util       = [double]$util
+    used_bytes = [double]$totalUsed
+    util       = [double]$maxUtil
+    gpus       = $adapters
 } | ConvertTo-Json -Compress
 """
 
@@ -121,16 +148,24 @@ def _probe_nvidia() -> dict | None:
         # sum across GPUs so multi-GPU boxes aren't silently under-reported
         used_mb = 0.0
         utils = []
+        gpus = []
         for line in proc.stdout.strip().splitlines():
             parts = [p.strip() for p in line.split(",")]
             if len(parts) < 2:
                 continue
-            used_mb += float(parts[0])
-            utils.append(float(parts[1]))
+            g_used = float(parts[0])
+            g_util = float(parts[1])
+            used_mb += g_used
+            utils.append(g_util)
+            gpus.append({
+                "used_mb": g_used,
+                "util_percent": _clamp_percent(g_util),
+            })
         return {
             "used_mb": used_mb,
             "util_percent": _clamp_percent(max(utils)) if utils else None,
             "source": "nvidia-smi",
+            "gpus": gpus,
         }
     except (subprocess.SubprocessError, ValueError, OSError):
         return None
@@ -150,10 +185,19 @@ def _probe_windows_cim() -> dict | None:
         used_bytes = data.get("used_bytes")
         if used_bytes is None:
             return None
+        gpus = []
+        for g in data.get("gpus", []):
+            b = g.get("used_bytes")
+            if b is not None and b >= 0:
+                gpus.append({
+                    "used_mb": float(b) / (1024**2),
+                    "util_percent": _clamp_percent(g.get("util")),
+                })
         return {
             "used_mb": float(used_bytes) / (1024**2),
             "util_percent": _clamp_percent(data.get("util")),
             "source": "windows_gpu_counters",
+            "gpus": gpus,
         }
     except (subprocess.SubprocessError, json.JSONDecodeError, ValueError, OSError, IndexError):
         return None

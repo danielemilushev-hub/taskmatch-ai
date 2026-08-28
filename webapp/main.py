@@ -327,12 +327,23 @@ def start_run(payload: dict) -> dict:
     config = load_config()
 
     models_filter = payload.get("models")
+    model_settings = payload.get("model_settings") or {}
     if models_filter:
-        by_name = {m["name"]: m for m in config["models"]}
-        # A model picked from live detection (not in config.yaml) has no
-        # known switch command -- fall back to manual-switch mode for it
-        # rather than rejecting the run outright.
-        config["models"] = [by_name.get(name, {"name": name}) for name in models_filter]
+        by_name = {m["name"]: dict(m) for m in config.get("models", [])}
+        new_models = []
+        for item in models_filter:
+            if isinstance(item, dict):
+                name = item["name"]
+                base_cfg = by_name.get(name, {"name": name}).copy()
+                base_cfg.update(item)
+                new_models.append(base_cfg)
+            else:
+                name = str(item)
+                base_cfg = by_name.get(name, {"name": name}).copy()
+                if name in model_settings:
+                    base_cfg.update(model_settings[name])
+                new_models.append(base_cfg)
+        config["models"] = new_models
 
     suites_filter = payload.get("suites")
     if suites_filter is not None:

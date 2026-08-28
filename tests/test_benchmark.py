@@ -184,6 +184,55 @@ class TestLocalbenchCore(unittest.TestCase):
         for p in problems:
             self.assertGreaterEqual(len(p["turns"]), 3)
 
+    def test_build_runtime_load_cmd_lmstudio(self):
+        from localbench.runner import _build_runtime_load_cmd
+        model_cfg = {
+            "name": "ministral-3-14b",
+            "runtime_flavor": "lmstudio",
+            "context_length": 8192,
+            "gpu_offload": "max",
+            "speculative_draft_mtp": True,
+        }
+        cmd = _build_runtime_load_cmd(model_cfg)
+        self.assertIn("lms load \"ministral-3-14b\"", cmd)
+        self.assertIn("-c 8192", cmd)
+        self.assertIn("--gpu max", cmd)
+        self.assertIn("--speculative-draft-mtp", cmd)
+
+    def test_build_runtime_load_cmd_llamacpp(self):
+        from localbench.runner import _build_runtime_load_cmd
+        model_cfg = {
+            "name": "qwen2.5-7b.gguf",
+            "runtime_flavor": "llamacpp",
+            "context_length": 16384,
+            "gpu_kv": "q4_0",
+            "flash_attention": True,
+            "split_mode": "row",
+            "batch_size": 2048,
+        }
+        cmd = _build_runtime_load_cmd(model_cfg)
+        self.assertIn("llama-server -m \"qwen2.5-7b.gguf\"", cmd)
+        self.assertIn("-c 16384", cmd)
+        self.assertIn("-ctk q4_0 -ctv q4_0", cmd)
+        self.assertIn("-fa", cmd)
+        self.assertIn("-sm row", cmd)
+        self.assertIn("-b 2048", cmd)
+
+    def test_build_runtime_load_cmd_vllm(self):
+        from localbench.runner import _build_runtime_load_cmd
+        model_cfg = {
+            "name": "meta-llama/Llama-3-8B",
+            "runtime_flavor": "vllm",
+            "context_length": 32768,
+            "gpu_kv": "fp8",
+            "gpu_offload": 0.90,
+        }
+        cmd = _build_runtime_load_cmd(model_cfg)
+        self.assertIn("vllm serve \"meta-llama/Llama-3-8B\"", cmd)
+        self.assertIn("--max-model-len 32768", cmd)
+        self.assertIn("--kv-cache-dtype fp8", cmd)
+        self.assertIn("--gpu-memory-utilization 0.9", cmd)
+
 
 if __name__ == "__main__":
     unittest.main()

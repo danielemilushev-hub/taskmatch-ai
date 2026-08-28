@@ -249,6 +249,77 @@ function buildBadgesFromNameGuess(modelName) {
   return badges;
 }
 
+function getModelSettings(modelName) {
+  state.modelSettings = state.modelSettings || {};
+  if (!state.modelSettings[modelName]) {
+    state.modelSettings[modelName] = {
+      runtime_flavor: "lmstudio",
+      context_length: null,
+      parallel: 1,
+      gpu_kv: "f16",
+      gpu_offload: "max",
+      flash_attention: true,
+      mmap: true,
+      mlock: false,
+      batch_size: 512,
+      split_mode: "layer",
+      sampling: {
+        temperature: 0.2,
+        min_p: 0.05,
+        top_p: 0.95,
+        repeat_penalty: 1.0,
+      },
+    };
+  }
+  return state.modelSettings[modelName];
+}
+
+function generatePreviewCmd(modelName, s) {
+  const flavor = s.runtime_flavor || "lmstudio";
+  if (flavor === "lmstudio") {
+    let cmd = `lms load "${modelName}" -y --gpu ${s.gpu_offload || "max"}`;
+    if (s.context_length) cmd += ` -c ${s.context_length}`;
+    if (s.parallel && s.parallel !== 1) cmd += ` --parallel ${s.parallel}`;
+    if (s.speculative_draft_mtp) cmd += ` --speculative-draft-mtp`;
+    return cmd;
+  } else if (flavor === "llamacpp") {
+    let cmd = `llama-server -m "${modelName}" -ngl 99`;
+    if (s.context_length) cmd += ` -c ${s.context_length}`;
+    if (s.parallel && s.parallel !== 1) cmd += ` -np ${s.parallel}`;
+    if (s.gpu_kv && s.gpu_kv !== "f16") cmd += ` -ctk ${s.gpu_kv} -ctv ${s.gpu_kv}`;
+    if (s.flash_attention) cmd += ` -fa`;
+    if (s.mmap === false) cmd += ` --no-mmap`;
+    if (s.mlock) cmd += ` --mlock`;
+    if (s.batch_size) cmd += ` -b ${s.batch_size}`;
+    if (s.split_mode && s.split_mode !== "none") cmd += ` -sm ${s.split_mode}`;
+    return cmd;
+  } else if (flavor === "vllm") {
+    let cmd = `vllm serve "${modelName}" --gpu-memory-utilization 0.95`;
+    if (s.context_length) cmd += ` --max-model-len ${s.context_length}`;
+    if (s.parallel && s.parallel !== 1) cmd += ` --max-num-seqs ${s.parallel}`;
+    if (s.gpu_kv && s.gpu_kv !== "f16") cmd += ` --kv-cache-dtype ${s.gpu_kv}`;
+    return cmd;
+  } else if (flavor === "ollama") {
+    return `Ollama API (options: { num_ctx: ${s.context_length || "default"}, temperature: ${s.sampling?.temperature || 0.2} })`;
+  }
+  return `Manual / Custom Runner`;
+}
+
+function updateCustomBadge(badgeEl, s) {
+  const customParts = [];
+  if (s.context_length) customParts.push(`${Math.round(s.context_length / 1024)}k ctx`);
+  if (s.parallel && s.parallel > 1) customParts.push(`${s.parallel} slots`);
+  if (s.gpu_kv && s.gpu_kv !== "f16") customParts.push(`${s.gpu_kv.toUpperCase()} KV`);
+  if (s.flash_attention) customParts.push("⚡ FA");
+  if (s.runtime_flavor && s.runtime_flavor !== "lmstudio") customParts.push(s.runtime_flavor);
+  if (customParts.length > 0) {
+    badgeEl.textContent = customParts.join(" • ");
+    badgeEl.style.display = "inline-block";
+  } else {
+    badgeEl.style.display = "none";
+  }
+}
+
 function renderModelGrid(container, models, selectedSet, searchQuery = "") {
   state.allModels = models;
   container.innerHTML = "";
@@ -260,9 +331,14 @@ function renderModelGrid(container, models, selectedSet, searchQuery = "") {
     const isChecked = selectedSet.has(modelName);
     const catalogEntry = catalog[modelName];
     const badgeData = catalogEntry ? buildBadgesFromCatalog(catalogEntry) : buildBadgesFromNameGuess(modelName);
+    const settings = getModelSettings(modelName);
 
-    const card = document.createElement("label");
+    const card = document.createElement("div");
     card.className = "model-card" + (isChecked ? " checked" : "");
+
+    // --- Card Header ---
+    const header = document.createElement("div");
+    header.className = "model-card-header";
 
     const cb = document.createElement("input");
     cb.type = "checkbox";
@@ -273,10 +349,15 @@ function renderModelGrid(container, models, selectedSet, searchQuery = "") {
       card.classList.toggle("checked", cb.checked);
       updateModelSelectCount(models, selectedSet);
     });
-    card.appendChild(cb);
+    header.appendChild(cb);
 
     const info = document.createElement("div");
     info.className = "model-card-info";
+    info.addEventListener("click", (e) => {
+      if (e.target.closest("button") || e.target.closest("select") || e.target.closest("input")) return;
+      cb.checked = !cb.checked;
+      cb.dispatchEvent(new Event("change"));
+    });
 
     const nameEl = document.createElement("div");
     nameEl.className = "model-card-name";
@@ -291,6 +372,12 @@ function renderModelGrid(container, models, selectedSet, searchQuery = "") {
       b.textContent = text;
       badges.appendChild(b);
     });
+
+    const customBadge = document.createElement("span");
+    customBadge.className = "model-card-custom-badge";
+    updateCustomBadge(customBadge, settings);
+    badges.appendChild(customBadge);
+
     if (!catalogEntry) {
       const b = document.createElement("span");
       b.className = "model-badge warn";
@@ -300,7 +387,202 @@ function renderModelGrid(container, models, selectedSet, searchQuery = "") {
     }
 
     info.appendChild(badges);
-    card.appendChild(info);
+    header.appendChild(info);
+
+    const settingsBtn = document.createElement("button");
+    settingsBtn.type = "button";
+    settingsBtn.className = "model-card-settings-btn";
+    settingsBtn.innerHTML = "⚙️";
+    settingsBtn.title = "Configure runtime flags, context length, KV quantization & tweaks";
+    header.appendChild(settingsBtn);
+
+    card.appendChild(header);
+
+    // --- Settings Drawer ---
+    const drawer = document.createElement("div");
+    drawer.className = "model-card-drawer";
+
+    settingsBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      drawer.classList.toggle("open");
+      settingsBtn.classList.toggle("active", drawer.classList.contains("open"));
+    });
+
+    // 1. Runtime & GPU Row
+    const row1 = document.createElement("div");
+    row1.className = "model-settings-row";
+
+    const flavorCol = document.createElement("div");
+    flavorCol.className = "model-settings-col";
+    flavorCol.innerHTML = "<label>Runtime Engine</label>";
+    const flavorSelect = document.createElement("select");
+    [
+      { value: "lmstudio", label: "LM Studio (lms)" },
+      { value: "llamacpp", label: "llama.cpp (server)" },
+      { value: "vllm", label: "vLLM (serve)" },
+      { value: "ollama", label: "Ollama (API)" },
+      { value: "custom", label: "Custom / Manual" },
+    ].forEach((opt) => {
+      const optEl = document.createElement("option");
+      optEl.value = opt.value;
+      optEl.textContent = opt.label;
+      if (settings.runtime_flavor === opt.value) optEl.selected = true;
+      flavorSelect.appendChild(optEl);
+    });
+    flavorCol.appendChild(flavorSelect);
+    row1.appendChild(flavorCol);
+
+    const gpuCol = document.createElement("div");
+    gpuCol.className = "model-settings-col";
+    gpuCol.innerHTML = "<label>GPU / VRAM Offload</label>";
+    const gpuSelect = document.createElement("select");
+    [
+      { value: "max", label: "Max (100% VRAM)" },
+      { value: "0.75", label: "75% Offload" },
+      { value: "0.5", label: "50% Offload" },
+      { value: "off", label: "CPU Only (0%)" },
+    ].forEach((opt) => {
+      const optEl = document.createElement("option");
+      optEl.value = opt.value;
+      optEl.textContent = opt.label;
+      if (String(settings.gpu_offload) === opt.value) optEl.selected = true;
+      gpuSelect.appendChild(optEl);
+    });
+    gpuCol.appendChild(gpuSelect);
+    row1.appendChild(gpuCol);
+
+    const parCol = document.createElement("div");
+    parCol.className = "model-settings-col";
+    parCol.innerHTML = "<label>Parallel Slots (Concurrency)</label>";
+    const parSelect = document.createElement("select");
+    [
+      { value: "1", label: "1 (Single / Max VRAM)" },
+      { value: "2", label: "2 (Dual slots)" },
+      { value: "4", label: "4 (Quad slots)" },
+    ].forEach((opt) => {
+      const optEl = document.createElement("option");
+      optEl.value = opt.value;
+      optEl.textContent = opt.label;
+      if (String(settings.parallel || 1) === opt.value) optEl.selected = true;
+      parSelect.appendChild(optEl);
+    });
+    parCol.appendChild(parSelect);
+    row1.appendChild(parCol);
+    drawer.appendChild(row1);
+
+    // 2. Context & KV Cache Row
+    const row2 = document.createElement("div");
+    row2.className = "model-settings-row";
+
+    const ctxCol = document.createElement("div");
+    ctxCol.className = "model-settings-col";
+    ctxCol.innerHTML = "<label>Context Window</label>";
+    const ctxSelect = document.createElement("select");
+    [
+      { value: "", label: "Default (Model Max)" },
+      { value: "2048", label: "2,048 (2k)" },
+      { value: "4096", label: "4,096 (4k)" },
+      { value: "8192", label: "8,192 (8k)" },
+      { value: "16384", label: "16,384 (16k)" },
+      { value: "32768", label: "32,768 (32k)" },
+      { value: "65536", label: "65,536 (64k)" },
+      { value: "131072", label: "131,072 (128k)" },
+    ].forEach((opt) => {
+      const optEl = document.createElement("option");
+      optEl.value = opt.value;
+      optEl.textContent = opt.label;
+      if (String(settings.context_length || "") === opt.value) optEl.selected = true;
+      ctxSelect.appendChild(optEl);
+    });
+    ctxCol.appendChild(ctxSelect);
+    row2.appendChild(ctxCol);
+
+    const kvCol = document.createElement("div");
+    kvCol.className = "model-settings-col";
+    kvCol.innerHTML = "<label>KV Cache Quantization</label>";
+    const kvSelect = document.createElement("select");
+    [
+      { value: "f16", label: "FP16 (Uncompressed)" },
+      { value: "q8_0", label: "Q8_0 (8-bit — ~50% VRAM savings)" },
+      { value: "q4_0", label: "Q4_0 (4-bit — ~75% VRAM savings)" },
+    ].forEach((opt) => {
+      const optEl = document.createElement("option");
+      optEl.value = opt.value;
+      optEl.textContent = opt.label;
+      if (settings.gpu_kv === opt.value) optEl.selected = true;
+      kvSelect.appendChild(optEl);
+    });
+    kvCol.appendChild(kvSelect);
+    row2.appendChild(kvCol);
+    drawer.appendChild(row2);
+
+    // 3. Engine Flags Row (Flash Attention, mmap, mlock)
+    const row3 = document.createElement("div");
+    row3.className = "model-drawer-section";
+    row3.innerHTML = '<div class="model-drawer-section-title">Engine & Memory Tweaks</div>';
+    const chipsDiv = document.createElement("div");
+    chipsDiv.className = "model-settings-chips";
+
+    const faChip = document.createElement("div");
+    faChip.className = "model-toggle-chip" + (settings.flash_attention ? " active" : "");
+    faChip.textContent = "⚡ Flash Attention";
+    faChip.title = "Uses Flash Attention tensor cores (auto-recommended with KV quant)";
+    faChip.addEventListener("click", () => {
+      settings.flash_attention = !settings.flash_attention;
+      faChip.classList.toggle("active", settings.flash_attention);
+      updatePreview();
+    });
+    chipsDiv.appendChild(faChip);
+
+    const mmapChip = document.createElement("div");
+    mmapChip.className = "model-toggle-chip" + (settings.mmap !== false ? " active" : "");
+    mmapChip.textContent = "📁 mmap (Fast load)";
+    mmapChip.title = "Memory map weights into page cache for fast model loading";
+    mmapChip.addEventListener("click", () => {
+      settings.mmap = !settings.mmap;
+      mmapChip.classList.toggle("active", settings.mmap !== false);
+      updatePreview();
+    });
+    chipsDiv.appendChild(mmapChip);
+
+    const mlockChip = document.createElement("div");
+    mlockChip.className = "model-toggle-chip" + (settings.mlock ? " active" : "");
+    mlockChip.textContent = "🔒 mlock (Lock RAM)";
+    mlockChip.title = "Lock model in physical RAM to prevent OS paging";
+    mlockChip.addEventListener("click", () => {
+      settings.mlock = !settings.mlock;
+      mlockChip.classList.toggle("active", settings.mlock);
+      updatePreview();
+    });
+    chipsDiv.appendChild(mlockChip);
+
+    row3.appendChild(chipsDiv);
+    drawer.appendChild(row3);
+
+    // 4. Command Preview Box
+    const cmdBox = document.createElement("div");
+    cmdBox.className = "model-cmd-preview";
+
+    function updatePreview() {
+      settings.runtime_flavor = flavorSelect.value;
+      settings.gpu_offload = gpuSelect.value;
+      settings.parallel = parseInt(parSelect.value, 10) || 1;
+      settings.context_length = ctxSelect.value ? parseInt(ctxSelect.value, 10) : null;
+      settings.gpu_kv = kvSelect.value;
+      cmdBox.textContent = generatePreviewCmd(modelName, settings);
+      updateCustomBadge(customBadge, settings);
+    }
+
+    flavorSelect.addEventListener("change", updatePreview);
+    gpuSelect.addEventListener("change", updatePreview);
+    parSelect.addEventListener("change", updatePreview);
+    ctxSelect.addEventListener("change", updatePreview);
+    kvSelect.addEventListener("change", updatePreview);
+
+    updatePreview();
+    drawer.appendChild(cmdBox);
+
+    card.appendChild(drawer);
     container.appendChild(card);
   });
 
@@ -457,26 +739,42 @@ async function loadModelCatalog() {
 async function loadHardwareSpecs() {
   try {
     const specs = await api("/api/hardware/specs");
-    const gpuEl = document.getElementById("hw-val-gpu");
-    const cpuEl = document.getElementById("hw-val-cpu");
-    const ramEl = document.getElementById("hw-val-ram");
+    const gridEl = document.getElementById("hw-specs-grid");
     const osBadge = document.getElementById("hw-os-badge");
     const vendorBadges = document.getElementById("hw-vendor-badges");
 
-    if (gpuEl) {
-      if (Array.isArray(specs.gpu) && specs.gpu.length > 0) {
-        const g = specs.gpu[0];
-        gpuEl.textContent = `${g.name || "GPU"} (${g.memory || ""})`;
+    if (gridEl) {
+      gridEl.innerHTML = "";
+      const gpus = Array.isArray(specs.gpu) ? specs.gpu : (specs.gpu ? [{ name: specs.gpu, memory: "" }] : []);
+      if (gpus.length > 1) {
+        gpus.forEach((g, idx) => {
+          const item = document.createElement("div");
+          item.className = "hw-spec-item";
+          item.style = "padding:6px 10px; background:var(--page); border-radius:6px; border:1px solid var(--border);";
+          item.innerHTML = `<span class="hw-label" style="font-size:11px; color:var(--text-muted); display:block;">🎴 GPU ${idx + 1}</span><span class="hw-value" style="font-size:12.5px; font-weight:600; color:var(--text);">${g.name || "GPU"}${g.memory ? ` (${g.memory})` : ""}</span>`;
+          gridEl.appendChild(item);
+        });
       } else {
-        gpuEl.textContent = specs.gpu || "Standard Graphics";
+        const g = gpus[0] || { name: "Standard Graphics", memory: "" };
+        const item = document.createElement("div");
+        item.className = "hw-spec-item";
+        item.style = "padding:6px 10px; background:var(--page); border-radius:6px; border:1px solid var(--border);";
+        item.innerHTML = `<span class="hw-label" style="font-size:11px; color:var(--text-muted); display:block;">🎴 GPU</span><span class="hw-value" id="hw-val-gpu" style="font-size:12.5px; font-weight:600; color:var(--text);">${g.name || "Standard Graphics"}${g.memory ? ` (${g.memory})` : ""}</span>`;
+        gridEl.appendChild(item);
       }
-    }
-    if (cpuEl) {
+
+      const cpuItem = document.createElement("div");
+      cpuItem.className = "hw-spec-item";
+      cpuItem.style = "padding:6px 10px; background:var(--page); border-radius:6px; border:1px solid var(--border);";
       const cores = specs.cpu_count_logical ? ` (${specs.cpu_count_logical} Threads)` : "";
-      cpuEl.textContent = `${specs.cpu || "CPU"}${cores}`;
-    }
-    if (ramEl) {
-      ramEl.textContent = specs.ram_total_gb ? `${specs.ram_total_gb} GB Total Memory` : "RAM";
+      cpuItem.innerHTML = `<span class="hw-label" style="font-size:11px; color:var(--text-muted); display:block;">🖥️ CPU</span><span class="hw-value" id="hw-val-cpu" style="font-size:12.5px; font-weight:600; color:var(--text);">${specs.cpu || "CPU"}${cores}</span>`;
+      gridEl.appendChild(cpuItem);
+
+      const ramItem = document.createElement("div");
+      ramItem.className = "hw-spec-item";
+      ramItem.style = "padding:6px 10px; background:var(--page); border-radius:6px; border:1px solid var(--border);";
+      ramItem.innerHTML = `<span class="hw-label" style="font-size:11px; color:var(--text-muted); display:block;">🧠 RAM</span><span class="hw-value" id="hw-val-ram" style="font-size:12.5px; font-weight:600; color:var(--text);">${specs.ram_total_gb ? `${specs.ram_total_gb} GB Total Memory` : "RAM"}</span>`;
+      gridEl.appendChild(ramItem);
     }
     if (osBadge) {
       osBadge.textContent = specs.os ? `${specs.os}` : "";
@@ -967,7 +1265,10 @@ document.getElementById("start-run").addEventListener("click", async () => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        models: Array.from(state.selectedModels),
+        models: Array.from(state.selectedModels).map((name) => {
+          const s = (state.modelSettings && state.modelSettings[name]) || {};
+          return { name, ...s };
+        }),
         suites: Array.from(state.selectedSuites),
         profile: selectedProfile(),
         run_frontier_graded: runFrontierGraded,
@@ -1224,22 +1525,45 @@ function ciTitle(suite) {
 // ---------- Live Hardware Monitor ----------
 // minSpan is the smallest y-range a chart will zoom into, in that metric's own
 // unit -- it stops an idle metric's jitter from being magnified to full height.
-const LIVE_METRICS = [
-  { key: "cpu_percent", label: "CPU", unit: "%", fixedMax: 100 },
-  { key: "ram_used_gb", label: "RAM", unit: "GB", totalKey: "ram_total_gb", minSpan: 0.5 },
-  { key: "gpu_util_percent", label: "GPU", unit: "%", fixedMax: 100 },
-  { key: "gpu_mem_used_gb", label: "GPU Memory", unit: "GB", minSpan: 0.5 },
-  { key: "disk_read_mb_s", label: "Disk Read", unit: "MB/s", minSpan: 1 },
-  { key: "disk_write_mb_s", label: "Disk Write", unit: "MB/s", minSpan: 1 },
-  // Most informative on unified-memory machines (Apple Silicon), where RAM
-  // and "VRAM" are one pool -- rising swap is the actual sign a model has
-  // outgrown available memory and is spilling to disk (which costs decode
-  // speed), not a separate VRAM figure the way discrete GPUs have one.
-  // Cross-platform (psutil), so shown everywhere -- normally near zero on a
-  // machine with plenty of RAM regardless of OS.
-  { key: "swap_percent", label: "Swap", unit: "%", fixedMax: 100 },
-];
+function getActiveLiveMetrics(samples) {
+  const latest = samples[samples.length - 1] || {};
+  const gpus = latest.gpus || [];
 
+  const metrics = [
+    { key: "cpu_percent", label: "CPU", unit: "%", fixedMax: 100 },
+    { key: "ram_used_gb", label: "RAM", unit: "GB", totalKey: "ram_total_gb", minSpan: 0.5 },
+  ];
+
+  if (gpus.length > 1) {
+    gpus.forEach((gpu, idx) => {
+      const shortName = gpu.short_name || `GPU ${idx + 1}`;
+      metrics.push({
+        id: `gpu_${idx}_util`,
+        getter: (s) => (s.gpus && s.gpus[idx] ? s.gpus[idx].util_percent : null),
+        label: `GPU ${idx + 1} (${shortName})`,
+        unit: "%",
+        fixedMax: 100,
+      });
+      metrics.push({
+        id: `gpu_${idx}_mem`,
+        getter: (s) => (s.gpus && s.gpus[idx] ? s.gpus[idx].mem_used_gb : null),
+        totalGetter: (s) => (s.gpus && s.gpus[idx] ? s.gpus[idx].mem_total_gb : null),
+        label: `GPU ${idx + 1} Memory`,
+        unit: "GB",
+        minSpan: 0.5,
+      });
+    });
+  } else {
+    metrics.push({ id: "gpu_util_percent", key: "gpu_util_percent", label: "GPU", unit: "%", fixedMax: 100 });
+    metrics.push({ id: "gpu_mem_used_gb", key: "gpu_mem_used_gb", label: "GPU Memory", unit: "GB", minSpan: 0.5 });
+  }
+
+  metrics.push({ id: "disk_read_mb_s", key: "disk_read_mb_s", label: "Disk Read", unit: "MB/s", minSpan: 1 });
+  metrics.push({ id: "disk_write_mb_s", key: "disk_write_mb_s", label: "Disk Write", unit: "MB/s", minSpan: 1 });
+  metrics.push({ id: "swap_percent", key: "swap_percent", label: "Swap", unit: "%", fixedMax: 100 });
+
+  return metrics;
+}
 
 /**
  * Sanity-gate a stored GPU utilization reading before displaying it.
@@ -1305,8 +1629,11 @@ function renderLiveMonitor(samples) {
   const height = 46;
   grid.innerHTML = "";
 
-  LIVE_METRICS.forEach((metric) => {
-    const values = samples.map((s) => s[metric.key]).filter((v) => v != null);
+  const activeMetrics = getActiveLiveMetrics(samples);
+
+  activeMetrics.forEach((metric, metricIdx) => {
+    const getValue = metric.getter || ((s) => s[metric.key]);
+    const values = samples.map(getValue).filter((v) => v != null);
     if (values.length === 0) return;
     const current = values[values.length - 1];
     const { yMin, yMax } = sparklineRange(values, metric);
@@ -1322,7 +1649,14 @@ function renderLiveMonitor(samples) {
     header.appendChild(labelEl);
     const valueEl = document.createElement("span");
     valueEl.className = "live-monitor-value";
-    const total = metric.totalKey ? samples[samples.length - 1][metric.totalKey] : null;
+
+    let total = null;
+    if (metric.totalGetter) {
+      total = metric.totalGetter(samples[samples.length - 1]);
+    } else if (metric.totalKey) {
+      total = samples[samples.length - 1][metric.totalKey];
+    }
+
     valueEl.textContent = total != null
       ? `${fmtNum(current, 1)}/${fmtNum(total, 1)} ${metric.unit}`
       : `${fmtNum(current, metric.unit === "%" ? 0 : 2)} ${metric.unit}`;
@@ -1341,13 +1675,13 @@ function renderLiveMonitor(samples) {
     svg.setAttribute("class", "live-monitor-svg");
 
     const defs = document.createElementNS(svgNs, "defs");
-    const gradId = `spark-grad-${metric.key}`;
+    const gradId = `spark-grad-${metric.id || 'm' + metricIdx}`;
     const grad = document.createElementNS(svgNs, "linearGradient");
     grad.setAttribute("id", gradId);
     grad.setAttribute("x1", "0"); grad.setAttribute("y1", "0");
     grad.setAttribute("x2", "0"); grad.setAttribute("y2", "1");
 
-    const isPurple = metric.key.includes("gpu") || metric.key.includes("ram");
+    const isPurple = (metric.key && (metric.key.includes("gpu") || metric.key.includes("ram"))) || (metric.label && metric.label.includes("GPU"));
     const strokeColor = isPurple ? "#a855f7" : "#00d2ff";
 
     const stop1 = document.createElementNS(svgNs, "stop");

@@ -44,6 +44,11 @@ class LiveHardwareMonitor:
         self._last_disk_time = time.monotonic()
         self._tick = 0
         self._last_gpu: dict | None = None
+        try:
+            from .hardware import _gpu_info
+            self._detected_gpus = _gpu_info()
+        except Exception:
+            self._detected_gpus = None
 
     def start(self) -> None:
         psutil.cpu_percent(interval=None)  # prime the non-blocking baseline
@@ -60,11 +65,6 @@ class LiveHardwareMonitor:
             try:
                 sample = self._collect()
             except Exception:
-                # A single bad tick (a transient psutil/subprocess hiccup)
-                # must not silently end monitoring for the rest of the run --
-                # this thread has no supervisor, so an uncaught exception
-                # here means every future sample is just missing with no
-                # error ever surfaced. Skip the tick, keep sampling.
                 self._tick += 1
                 self._stop_event.wait(self.interval)
                 continue
@@ -77,12 +77,6 @@ class LiveHardwareMonitor:
         cpu_percent = psutil.cpu_percent(interval=None)
         mem = psutil.virtual_memory()
         try:
-            # Observed failing on a real machine: psutil.swap_memory() raises
-            # RuntimeError here when Windows Performance Counters are
-            # disabled/corrupted, which is an environment issue unrelated to
-            # whether swap itself is usable. Degrades to "unavailable" like
-            # every other probe in this codebase, rather than taking down
-            # the whole sampling tick over one optional metric.
             swap_percent = psutil.swap_memory().percent
         except Exception:
             swap_percent = None
@@ -109,23 +103,47 @@ class LiveHardwareMonitor:
 
         gpu_data = self._last_gpu or {}
         gpu_mem_mb = gpu_data.get("used_mb")
+        raw_gpus = gpu_data.get("gpus") or []
+
+        detected = self._detected_gpus if isinstance(self._detected_gpus, list) else []
+        gpus_summary = []
+        for i, g in enumerate(raw_gpus):
+            det = detected[i] if i < len(detected) else {}
+            name = det.get("name")
+            if not name:
+                if (g.get("used_mb") or 0) == 0 and (g.get("util_percent") or 0) == 0:
+                    continue
+                name = f"GPU {i+1}"
+            mem_str = det.get("memory") or ""
+            total_gb = None
+            if mem_str and "gb" in mem_str.lower():
+                try:
+                    total_gb = float(mem_str.lower().replace("gb", "").strip())
+                except ValueError:
+                    total_gb = None
+
+            u_mb = g.get("used_mb")
+            short_name = name.replace("AMD Radeon ", "").replace("NVIDIA GeForce ", "").strip()
+            gpus_summary.append({
+                "index": i,
+                "name": name,
+                "short_name": short_name,
+                "util_percent": g.get("util_percent"),
+                "mem_used_gb": round(u_mb / 1024, 2) if u_mb is not None else None,
+                "mem_total_gb": total_gb,
+            })
 
         return {
             "timestamp": time.time(),
             "cpu_percent": cpu_percent,
             "ram_used_gb": round(mem.used / (1024**3), 2),
             "ram_total_gb": round(mem.total / (1024**3), 2),
-            # Most useful on unified-memory machines (Apple Silicon), where
-            # RAM and "VRAM" are the same physical pool -- swapping is the
-            # actual signal that a model has outgrown available memory and
-            # is spilling to disk (which slows decode speed), not a
-            # separate VRAM-used figure the way discrete GPUs have. Cheap
-            # and cross-platform (psutil), so sampled everywhere either way.
             "swap_percent": swap_percent,
             "disk_read_mb_s": round(read_bytes_sec / (1024**2), 2),
             "disk_write_mb_s": round(write_bytes_sec / (1024**2), 2),
             "gpu_util_percent": gpu_data.get("util_percent"),
             "gpu_mem_used_gb": round(gpu_mem_mb / 1024, 2) if gpu_mem_mb is not None else None,
+            "gpus": gpus_summary,
         }
 
     def latest_samples(self) -> list[dict]:
