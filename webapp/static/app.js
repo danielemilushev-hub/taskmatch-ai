@@ -617,6 +617,9 @@ function renderModelGrid(container, models, selectedSet, searchQuery = "") {
     drawer.appendChild(row3);
 
     // 4. Command Preview Box
+    const cmdBox = document.createElement("div");
+    cmdBox.className = "model-cmd-preview";
+
     function updatePreview() {
       settings.runtime_flavor = flavorSelect.value;
       settings.gpu_offload = gpuSelect.value;
@@ -875,6 +878,7 @@ async function loadHardwareSpecs() {
 }
 
 async function loadConfig() {
+  loadHardwareSpecs();
   state.config = await api("/api/config");
   Object.entries(state.config.suites).forEach(([name, sVal]) => {
     const isEnabled = typeof sVal === "object" ? sVal.enabled : sVal;

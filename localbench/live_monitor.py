@@ -108,6 +108,8 @@ class LiveHardwareMonitor:
         detected = self._detected_gpus if isinstance(self._detected_gpus, list) else []
         gpus_summary = []
         for i, g in enumerate(raw_gpus):
+            if detected and i >= len(detected):
+                continue
             det = detected[i] if i < len(detected) else {}
             name = det.get("name")
             if not name:
