@@ -8,22 +8,31 @@
 <body>
 <div class="app">
   <header class="top">
-    <div class="row" style="align-items: center; gap: 12px;">
-      <img src="/static/logo.jpg" alt="TaskMatch AI Logo" style="width: 40px; height: 40px; border-radius: 9px; box-shadow: 0 0 12px rgba(0, 210, 255, 0.4); object-fit: cover;">
+    <div class="row" style="align-items: center; gap: 14px;">
+      <img src="/static/logo.jpg" alt="TaskMatch AI Logo" style="width: 44px; height: 44px; border-radius: 11px; box-shadow: 0 0 16px rgba(0, 210, 255, 0.45); object-fit: cover;">
       <div>
-        <h1 style="margin: 0; font-size: 1.45rem; line-height: 1.1;">TaskMatch AI</h1>
-        <span class="sub" style="margin: 0; display: block; margin-top: 2px;">Test your local models on real tasks to find the exact fit for your needs.</span>
+        <div class="row" style="align-items: center; gap: 8px;">
+          <h1 style="margin: 0; font-size: 1.55rem; line-height: 1.1;">TaskMatch AI</h1>
+          <span class="model-badge" style="background: rgba(0, 210, 255, 0.12); color: #00d2ff; border: 1px solid rgba(0, 210, 255, 0.35); font-size: 10.5px; font-weight: 700; letter-spacing: 0.04em;">PRO v2.5</span>
+        </div>
+        <span class="sub" style="margin: 0; display: block; margin-top: 3px;">Workstation-Grade Local LLM Benchmark & Capability Matchmaker</span>
       </div>
     </div>
-    <button class="theme-toggle" id="theme-toggle" aria-label="Toggle dark/light theme" title="Toggle theme"></button>
+    <div class="row" style="gap: 10px; align-items: center;">
+      <div class="header-status-pill" id="header-hw-pill" title="Detected host system hardware">
+        <span class="pulse-dot" style="display:inline-block; width:7px; height:7px; border-radius:50%; background:#10b981; box-shadow:0 0 8px #10b981;"></span>
+        <span id="header-hw-text">Detecting System & GPUs...</span>
+      </div>
+      <button class="theme-toggle" id="theme-toggle" aria-label="Toggle dark/light theme" title="Toggle theme"></button>
+    </div>
   </header>
 
   <nav class="tabs">
-    <button data-view="run" class="active">New Run</button>
-    <button data-view="history">History</button>
-    <button data-view="compare">Compare</button>
-    <button data-view="playground">Playground</button>
-    <button data-view="settings">Settings</button>
+    <button data-view="run" class="active">🚀 Benchmark Suite</button>
+    <button data-view="history">📊 History & Analytics</button>
+    <button data-view="compare">⚔️ Model Arena</button>
+    <button data-view="playground">🧪 Playground & Lab</button>
+    <button data-view="settings">⚙️ Settings & Engine</button>
   </nav>
 
   <!-- NEW RUN -->

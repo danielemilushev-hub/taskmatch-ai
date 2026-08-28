@@ -387,6 +387,52 @@ function renderModelGrid(container, models, selectedSet, searchQuery = "") {
     }
 
     info.appendChild(badges);
+
+    // --- VRAM Fit Bar Gauge ---
+    let modelSizeGB = null;
+    if (catalogEntry && catalogEntry.size_bytes) {
+      modelSizeGB = catalogEntry.size_bytes / (1024 ** 3);
+    } else {
+      const sizeBadge = badgeData.find((b) => b.cls === "size" && b.text.includes("GB"));
+      if (sizeBadge) {
+        const match = sizeBadge.text.match(/([0-9.]+)\s*GB/i);
+        if (match) modelSizeGB = parseFloat(match[1]);
+      }
+    }
+
+    if (modelSizeGB != null && modelSizeGB > 0) {
+      const gpu1_vram = 15.98;
+      const dual_vram = 23.96;
+      let barClass = "gpu1";
+      let fitClass = "gpu1";
+      let fitText = `Fits in GPU 1 (${Math.round((modelSizeGB / gpu1_vram) * 100)}%)`;
+
+      if (modelSizeGB > gpu1_vram && modelSizeGB <= dual_vram) {
+        barClass = "dual";
+        fitClass = "dual";
+        fitText = `Fits across Dual GPUs (24GB)`;
+      } else if (modelSizeGB > dual_vram) {
+        barClass = "spill";
+        fitClass = "spill";
+        fitText = `Exceeds GPU VRAM (Spills to RAM)`;
+      }
+
+      const fillPct = Math.min(100, Math.round((modelSizeGB / gpu1_vram) * 100));
+
+      const vramFit = document.createElement("div");
+      vramFit.className = "model-vram-fit";
+      vramFit.innerHTML = `
+        <div class="model-vram-track">
+          <div class="model-vram-fill ${barClass}" style="width:${fillPct}%;"></div>
+        </div>
+        <div class="model-vram-label">
+          <span>${modelSizeGB.toFixed(1)} GB</span>
+          <span class="fit-tag ${fitClass}">${fitText}</span>
+        </div>
+      `;
+      info.appendChild(vramFit);
+    }
+
     header.appendChild(info);
 
     const settingsBtn = document.createElement("button");
@@ -407,6 +453,17 @@ function renderModelGrid(container, models, selectedSet, searchQuery = "") {
       drawer.classList.toggle("open");
       settingsBtn.classList.toggle("active", drawer.classList.contains("open"));
     });
+
+    // 0. Quick Presets Row
+    const presetsRow = document.createElement("div");
+    presetsRow.className = "model-preset-row";
+    presetsRow.innerHTML = `
+      <span style="font-size:11px; font-weight:600; color:var(--text-muted); align-self:center;">Presets:</span>
+      <button type="button" class="model-preset-btn" data-preset="speed">⚡ Max Speed</button>
+      <button type="button" class="model-preset-btn" data-preset="64k">🧠 64k Ctx</button>
+      <button type="button" class="model-preset-btn" data-preset="balanced">🎯 Balanced</button>
+    `;
+    drawer.appendChild(presetsRow);
 
     // 1. Runtime & GPU Row
     const row1 = document.createElement("div");
@@ -560,9 +617,6 @@ function renderModelGrid(container, models, selectedSet, searchQuery = "") {
     drawer.appendChild(row3);
 
     // 4. Command Preview Box
-    const cmdBox = document.createElement("div");
-    cmdBox.className = "model-cmd-preview";
-
     function updatePreview() {
       settings.runtime_flavor = flavorSelect.value;
       settings.gpu_offload = gpuSelect.value;
@@ -572,6 +626,38 @@ function renderModelGrid(container, models, selectedSet, searchQuery = "") {
       cmdBox.textContent = generatePreviewCmd(modelName, settings);
       updateCustomBadge(customBadge, settings);
     }
+
+    presetsRow.querySelectorAll(".model-preset-btn").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const p = btn.dataset.preset;
+        if (p === "speed") {
+          settings.gpu_offload = "max";
+          settings.parallel = 1;
+          settings.gpu_kv = "f16";
+          settings.flash_attention = true;
+          gpuSelect.value = "max";
+          parSelect.value = "1";
+          kvSelect.value = "f16";
+          faChip.classList.add("active");
+        } else if (p === "64k") {
+          settings.context_length = 65536;
+          settings.parallel = 1;
+          settings.flash_attention = true;
+          ctxSelect.value = "65536";
+          parSelect.value = "1";
+          faChip.classList.add("active");
+        } else if (p === "balanced") {
+          settings.context_length = 8192;
+          settings.gpu_offload = "max";
+          settings.parallel = 1;
+          ctxSelect.value = "8192";
+          gpuSelect.value = "max";
+          parSelect.value = "1";
+        }
+        updatePreview();
+      });
+    });
 
     flavorSelect.addEventListener("change", updatePreview);
     gpuSelect.addEventListener("change", updatePreview);
@@ -776,25 +862,12 @@ async function loadHardwareSpecs() {
       ramItem.innerHTML = `<span class="hw-label" style="font-size:11px; color:var(--text-muted); display:block;">🧠 RAM</span><span class="hw-value" id="hw-val-ram" style="font-size:12.5px; font-weight:600; color:var(--text);">${specs.ram_total_gb ? `${specs.ram_total_gb} GB Total Memory` : "RAM"}</span>`;
       gridEl.appendChild(ramItem);
     }
-    if (osBadge) {
-      osBadge.textContent = specs.os ? `${specs.os}` : "";
-    }
-
-    if (vendorBadges) {
-      vendorBadges.innerHTML = "";
-      const text = `${specs.cpu || ""} ${JSON.stringify(specs.gpu || "")}`.toLowerCase();
-      if (text.includes("nvidia")) {
-        vendorBadges.innerHTML += `<span class="model-badge" style="background:rgba(16, 185, 129, 0.15); color:#34d399; border:1px solid rgba(16, 185, 129, 0.3);">NVIDIA</span>`;
-      }
-      if (text.includes("amd") || text.includes("radeon")) {
-        vendorBadges.innerHTML += `<span class="model-badge" style="background:rgba(239, 68, 68, 0.15); color:#f87171; border:1px solid rgba(239, 68, 68, 0.3);">AMD</span>`;
-      }
-      if (text.includes("intel")) {
-        vendorBadges.innerHTML += `<span class="model-badge" style="background:rgba(59, 130, 246, 0.15); color:#60a5fa; border:1px solid rgba(59, 130, 246, 0.3);">Intel</span>`;
-      }
-      if (text.includes("apple") || text.includes("m1") || text.includes("m2") || text.includes("m3") || text.includes("m4")) {
-        vendorBadges.innerHTML += `<span class="model-badge" style="background:rgba(168, 85, 247, 0.15); color:#c084fc; border:1px solid rgba(168, 85, 247, 0.3);">Apple Silicon</span>`;
-      }
+    const headerHwText = document.getElementById("header-hw-text");
+    if (headerHwText) {
+      const gpus = Array.isArray(specs.gpu) ? specs.gpu : (specs.gpu ? [{ name: specs.gpu, memory: "" }] : []);
+      const gpuNames = gpus.map(g => g.name.replace("AMD Radeon ", "").replace("NVIDIA GeForce ", "").trim()).join(" + ");
+      const cpuShort = (specs.cpu || "CPU").replace(" Processor", "").replace(" 6-Core", "").trim();
+      headerHwText.textContent = `${cpuShort} · ${gpuNames || "GPU"} · ${specs.ram_total_gb || ""}GB RAM`;
     }
   } catch (e) {
     console.error("Hardware specs fetch failed", e);
