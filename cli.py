@@ -99,13 +99,20 @@ def cmd_run(args: argparse.Namespace) -> None:
 
 
 def cmd_serve(args: argparse.Namespace) -> None:
+    import threading
+    import time
     import uvicorn
 
     if bootstrap_config():
         print("created config.yaml from config.example.yaml -- edit it, or use the Settings tab")
 
-    if not args.no_browser:
+    def _open_browser() -> None:
+        time.sleep(1.0)
         webbrowser.open(f"http://localhost:{args.port}")
+
+    if not args.no_browser:
+        threading.Thread(target=_open_browser, daemon=True).start()
+
     uvicorn.run("webapp.main:app", host="127.0.0.1", port=args.port)
 
 
