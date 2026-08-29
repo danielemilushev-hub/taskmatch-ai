@@ -112,6 +112,16 @@ def get_hardware_specs() -> dict:
     return _hw_specs_cache
 
 
+@app.get("/api/hardware/live")
+def get_live_hardware_telemetry() -> dict:
+    """Return real-time live hardware resource metrics (CPU, RAM, GPUs)."""
+    try:
+        from localbench.live_monitor import get_instant_hardware_sample
+        return get_instant_hardware_sample()
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @app.get("/api/models/detect")
 def detect_models() -> dict:
     """Query the configured runtime directly for what's actually loadable

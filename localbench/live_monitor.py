@@ -151,3 +151,15 @@ class LiveHardwareMonitor:
     def latest_samples(self) -> list[dict]:
         with self._lock:
             return list(self._samples)
+
+
+_GLOBAL_MONITOR: LiveHardwareMonitor | None = None
+
+
+def get_instant_hardware_sample() -> dict:
+    """Return an immediate hardware utilization sample (CPU, RAM, GPUs)."""
+    global _GLOBAL_MONITOR
+    if _GLOBAL_MONITOR is None:
+        _GLOBAL_MONITOR = LiveHardwareMonitor()
+    return _GLOBAL_MONITOR._collect()
+

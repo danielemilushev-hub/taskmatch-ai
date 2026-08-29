@@ -157,7 +157,7 @@ function renderChecklist(container, items, selectedSet) {
       infoBtn.style.opacity = "0.7";
       infoBtn.addEventListener("click", (e) => {
         e.stopPropagation();
-        alert(SUITE_DESCRIPTIONS[item]);
+        showToast(SUITE_DESCRIPTIONS[item], "info");
       });
       label.appendChild(infoBtn);
     }
@@ -597,7 +597,20 @@ function openModelConfigModal(modelName) {
   faChip.classList.toggle("active", settings.flash_attention !== false);
   mmapChip.classList.toggle("active", settings.mmap !== false);
   mlockChip.classList.toggle("active", !!settings.mlock);
-  statusEl.textContent = "";
+  statusEl.innerHTML = '<span style="color:var(--text-muted); font-size:11.5px;">Checking server status on :8080...</span>';
+
+  // Check live runtime status
+  api("/api/models/active").then((res) => {
+    if (res.active && (res.model === modelName || (res.model && res.model.toLowerCase().includes(modelName.toLowerCase())))) {
+      statusEl.innerHTML = '<span style="color:#10b981; font-weight:600;">🟢 Model active in VRAM on :8080</span>';
+    } else if (res.active) {
+      statusEl.innerHTML = `<span style="color:#f59e0b; font-size:11.5px;">⚠️ Another model (${res.model}) is active on :${res.port} — will auto-switch</span>`;
+    } else {
+      statusEl.innerHTML = '<span style="color:var(--text-muted); font-size:11.5px;">⚪ Server ready — will auto-launch on Start</span>';
+    }
+  }).catch(() => {
+    statusEl.innerHTML = '<span style="color:var(--text-muted); font-size:11.5px;">⚪ Server ready — will auto-launch on Start</span>';
+  });
 
   function syncAndPreview() {
     settings.runtime_flavor = engineSel.value;
@@ -766,6 +779,13 @@ function switchToActiveBenchmarkStage(modelName, settings) {
   if (engineBadge) {
     engineBadge.textContent = `${settings.runtime_flavor === "lmstudio" ? "LM Studio" : "llama.cpp"} Vulkan (Dual GPU)`;
   }
+
+  // Instantly render current hardware metrics so the user sees live gauges immediately
+  api("/api/hardware/live").then((liveSample) => {
+    if (liveSample && !liveSample.error) {
+      renderLiveMonitor([liveSample]);
+    }
+  }).catch(() => {});
 }
 
 function switchToModelSelectionStage() {
@@ -1527,9 +1547,7 @@ async function resumeActiveRunIfAny() {
       return;
     }
     state.activeRunId = savedRunId;
-    document.getElementById("start-run").disabled = true;
-    document.getElementById("run-progress").style.display = "block";
-    document.getElementById("stop-run").style.display = "";
+    switchToActiveBenchmarkStage(data.current_model || "Running Model", {});
     pollRun();
   } catch (e) {
     localStorage.removeItem("localbench-active-run");
@@ -1542,7 +1560,7 @@ function renderFormattedLogLines(logLines) {
     let escaped = escapeHtml(line);
     escaped = escaped.replace(/\bPASS\b/g, '<span class="log-pass">🟢 PASS</span>');
     escaped = escaped.replace(/\bFAIL\b/g, '<span class="log-fail">🔴 FAIL</span>');
-    if (escaped.includes("switching to model:") || escaped.includes("running ")) {
+    if (escaped.includes("switching to model:") || escaped.includes("running ") || escaped.includes("launching ")) {
       escaped = `<span class="log-switching">${escaped}</span>`;
     }
     escaped = escaped.replace(/\[([\w\-\.\/]+)\]/g, '<span class="log-model">[$1]</span>');
@@ -1551,47 +1569,14 @@ function renderFormattedLogLines(logLines) {
 }
 
 function updateTelemetryHUD(data) {
-  const hud = document.getElementById("run-telemetry-hud");
-  if (!hud) return;
-  if (!data || data.done || !data.log || data.log.length === 0) {
-    hud.style.display = "none";
-    return;
-  }
-  hud.style.display = "block";
+  if (!data || !data.log || data.log.length === 0) return;
 
-  const modelEl = document.getElementById("hud-active-model");
-  const fillEl = document.getElementById("hud-progress-fill");
-  const textEl = document.getElementById("hud-progress-text");
-  const pctEl = document.getElementById("hud-pct-text");
-  const tokSecEl = document.getElementById("hud-tok-sec");
-  const ttftEl = document.getElementById("hud-ttft");
-
-  const lastLine = data.log[data.log.length - 1] || "";
-  const modelMatch = lastLine.match(/\[([\w\-\.\/]+)\]/);
-  if (modelMatch && modelEl) {
-    modelEl.textContent = `Benchmarking: ${modelMatch[1]}`;
-  }
-
-  // Most-recently-completed problem's real speed, not a placeholder --
-  // updated by the runner after every problem (see run_manager.py's
-  // update_live_stats / runner.py's on_stats hook).
-  if (tokSecEl) {
-    tokSecEl.textContent = data.live_tokens_per_sec != null
-      ? `⚡ ${fmtNum(data.live_tokens_per_sec, 1)} tok/s`
-      : "⚡ -- tok/s";
-  }
-  if (ttftEl) {
-    ttftEl.textContent = data.live_ttft_seconds != null
-      ? `⏱️ ${fmtNum(data.live_ttft_seconds, 2)}s TTFT`
-      : "⏱️ -- TTFT";
-  }
-
-  // Update stage HUD elements
   const stageTokSec = document.getElementById("stage-tok-sec");
   const stageTtft = document.getElementById("stage-ttft");
   const stageFill = document.getElementById("stage-progress-fill");
   const stagePct = document.getElementById("stage-pct-label");
   const stageTaskCount = document.getElementById("stage-task-count");
+  const stageTaskLabel = document.getElementById("stage-task-label");
   const stageModelName = document.getElementById("stage-hero-model-name");
 
   if (stageTokSec && data.live_tokens_per_sec != null) {
@@ -1601,24 +1586,35 @@ function updateTelemetryHUD(data) {
     stageTtft.textContent = `⏱️ ${fmtNum(data.live_ttft_seconds, 2)}s`;
   }
 
+  const lastLine = data.log[data.log.length - 1] || "";
+  const modelMatch = lastLine.match(/\[([\w\-\.\/]+)\]/);
+  if (modelMatch && stageModelName) {
+    stageModelName.textContent = modelMatch[1];
+  }
+
   const countMatch = lastLine.match(/\[(\d+)\/(\d+)\]/);
   if (countMatch) {
     const cur = parseInt(countMatch[1], 10);
     const tot = parseInt(countMatch[2], 10);
     const pct = Math.round((cur / tot) * 100);
-    if (fillEl && textEl && pctEl) {
-      fillEl.style.width = `${pct}%`;
-      textEl.textContent = `Task ${cur} / ${tot}`;
-      pctEl.textContent = `${pct}%`;
-    }
-    if (stageFill && stagePct && stageTaskCount) {
-      stageFill.style.width = `${pct}%`;
-      stagePct.textContent = `${pct}%`;
-      stageTaskCount.textContent = `Task ${cur} of ${tot}`;
-    }
+    if (stageFill) stageFill.style.width = `${pct}%`;
+    if (stagePct) stagePct.textContent = `${pct}%`;
+    if (stageTaskCount) stageTaskCount.textContent = `Task ${cur} of ${tot}`;
+    if (stageTaskLabel) stageTaskLabel.textContent = `Evaluating task ${cur}/${tot}...`;
   }
-  if (modelMatch && stageModelName) {
-    stageModelName.textContent = modelMatch[1];
+
+  // Update Global Active Run Header Pill & Tab Badge
+  const headerRunPill = document.getElementById("header-active-run-pill");
+  const headerRunLabel = document.getElementById("header-active-run-label");
+  const tabRunBadge = document.getElementById("tab-run-live-badge");
+
+  if (headerRunPill) headerRunPill.style.display = "flex";
+  if (tabRunBadge) tabRunBadge.style.display = "inline-block";
+  if (headerRunLabel) {
+    const mName = stageModelName ? stageModelName.textContent : "Model";
+    const progText = countMatch ? ` (${countMatch[1]}/${countMatch[2]})` : "";
+    const speedText = data.live_tokens_per_sec ? ` · ${fmtNum(data.live_tokens_per_sec, 1)} t/s` : "";
+    headerRunLabel.textContent = `⚡ Live: ${mName}${progText}${speedText}`;
   }
 }
 
@@ -1629,6 +1625,21 @@ if (backToModelsBtn) {
   });
 }
 
+// Global Quick-Return Button Click: Switch straight to Live Benchmark View
+const activeRunPill = document.getElementById("header-active-run-pill");
+if (activeRunPill) {
+  activeRunPill.addEventListener("click", () => {
+    switchView("run");
+    const selectionStage = document.getElementById("model-selection-stage");
+    const activeStage = document.getElementById("active-benchmark-stage");
+    if (selectionStage) selectionStage.style.display = "none";
+    if (activeStage) {
+      activeStage.style.display = "block";
+      activeStage.scrollIntoView({ behavior: "smooth" });
+    }
+  });
+}
+
 function pollRun() {
   clearTimeout(state.pollTimer);
   const poll = async () => {
@@ -1636,38 +1647,45 @@ function pollRun() {
     try {
       data = await api(`/api/run/${state.activeRunId}/status`);
     } catch (e) {
-      document.getElementById("run-log").innerHTML += `\n\n(lost connection to run: ${escapeHtml(e.message)})`;
+      const logEl = document.getElementById("run-log");
+      if (logEl) logEl.innerHTML += `\n\n(lost connection to run: ${escapeHtml(e.message)})`;
       localStorage.removeItem("localbench-active-run");
-      document.getElementById("start-run").disabled = false;
-      document.getElementById("stop-run").style.display = "none";
+      const headerRunPill = document.getElementById("header-active-run-pill");
+      const tabRunBadge = document.getElementById("tab-run-live-badge");
+      if (headerRunPill) headerRunPill.style.display = "none";
+      if (tabRunBadge) tabRunBadge.style.display = "none";
       return;
     }
-    document.getElementById("run-log").innerHTML = renderFormattedLogLines(data.log);
-    document.getElementById("run-log").scrollTop = document.getElementById("run-log").scrollHeight;
-    renderLiveMonitor(data.resource_samples || []);
-    updateTelemetryHUD(data);
-
-    const banner = document.getElementById("confirm-banner");
-    if (data.status === "waiting_confirm") {
-      banner.style.display = "flex";
-      document.getElementById("confirm-message").textContent = data.pending_message;
-    } else {
-      banner.style.display = "none";
+    const logEl = document.getElementById("run-log");
+    if (logEl) {
+      logEl.innerHTML = renderFormattedLogLines(data.log);
+      logEl.scrollTop = logEl.scrollHeight;
     }
+    if (data.resource_samples) {
+      renderLiveMonitor(data.resource_samples);
+    }
+    updateTelemetryHUD(data);
 
     if (data.done) {
       localStorage.removeItem("localbench-active-run");
-      document.getElementById("start-run").disabled = false;
-      document.getElementById("stop-run").style.display = "none";
-      document.getElementById("run-telemetry-hud").style.display = "none";
+      const headerRunPill = document.getElementById("header-active-run-pill");
+      const tabRunBadge = document.getElementById("tab-run-live-badge");
+      if (headerRunPill) headerRunPill.style.display = "none";
+      if (tabRunBadge) tabRunBadge.style.display = "none";
+
+      const stageTaskLabel = document.getElementById("stage-task-label");
+      if (stageTaskLabel) {
+        stageTaskLabel.textContent = data.error ? "Benchmark Completed with Errors" : "Benchmark Successfully Completed! 🎉";
+      }
       if (data.error) {
-        document.getElementById("run-log").innerHTML += `\n\n<span class="log-fail">ERROR: ${escapeHtml(data.error)}</span>`;
+        if (logEl) logEl.innerHTML += `\n\n<span class="log-fail">ERROR: ${escapeHtml(data.error)}</span>`;
       } else {
-        document.getElementById("run-log").innerHTML += `\n\n<span class="log-pass">Done -- saved as run ${escapeHtml(data.result_run_id)}</span>`;
+        if (logEl) logEl.innerHTML += `\n\n<span class="log-pass">✓ Completed All Suites — saved as run ${escapeHtml(data.result_run_id)}</span>`;
       }
       return;
     }
-    const delay = document.hidden ? 3500 : 1500;
+
+    const delay = document.hidden ? 3000 : 1000;
     state.pollTimer = setTimeout(poll, delay);
   };
   poll();
@@ -1701,7 +1719,7 @@ document.getElementById("stop-run")?.addEventListener("click", async () => {
     document.getElementById("run-log").textContent += "\n\nStopping after the current problem...";
   } catch (e) {
     btn.disabled = false;
-    alert("Could not stop the run: " + apiErrorDetail(e));
+    showToast("Could not stop the run: " + apiErrorDetail(e), "error");
   }
 });
 
@@ -2195,8 +2213,8 @@ async function loadRunList() {
       e.stopPropagation();
       const ok = await confirmDialog({
         title: "Delete this run?",
-        message: `Run ${run.run_id} and its saved report will be permanently removed. This cannot be undone.`,
-        confirmLabel: "Delete",
+        message: `Run ${run.run_id} and its saved report will be permanently removed from disk. This cannot be undone.`,
+        confirmLabel: "Delete permanently",
         danger: true,
       });
       if (!ok) return;
@@ -2210,12 +2228,13 @@ async function loadRunList() {
         }
         if (state.currentRunData?.run_id === run.run_id) {
           state.currentRunData = null;
-          document.getElementById("run-detail-card").style.display = "none";
-          document.getElementById("run-detail-body").innerHTML = "";
+          const modal = document.getElementById("run-detail-modal");
+          if (modal) modal.style.display = "none";
         }
+        showToast(`✓ Run ${run.run_id} deleted`, "success");
         await loadRunList();
       } catch (err) {
-        alert("Failed to delete run: " + err.message);
+        showToast(`Failed to delete run: ${apiErrorDetail(err)}`, "error");
       }
     });
     actions.appendChild(deleteBtn);
@@ -2239,29 +2258,68 @@ function fmtPct(x) {
 }
 
 async function showRunDetail(runId) {
-  const data = await api(`/api/runs/${runId}`);
-  state.currentRunData = data;
-  document.getElementById("run-detail-card").style.display = "block";
-  document.getElementById("run-detail-title").textContent = `Run ${runId}`;
-  document.getElementById("run-detail-links").innerHTML = `
-    <a href="/api/runs/${runId}/report.md" target="_blank">Markdown</a>
-    <a href="/api/runs/${runId}/report.pdf" target="_blank">PDF</a>
-    <a href="/api/runs/${runId}/raw.json" target="_blank">Raw JSON</a>`;
+  try {
+    const data = await api(`/api/runs/${runId}`);
+    state.currentRunData = data;
+    const modal = document.getElementById("run-detail-modal");
+    if (!modal) return;
 
-  const suiteNames = new Set();
-  Object.values(data.models).forEach((m) => Object.keys(m.suites).forEach((s) => suiteNames.add(s)));
-  // Model/suite names come from the runtime and from saved run files, so they
-  // are escaped rather than interpolated raw into option markup.
-  const suiteFilter = document.getElementById("suite-filter");
-  suiteFilter.innerHTML = '<option value="">All suites</option>' +
-    Array.from(suiteNames).map((s) => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join("");
-  const modelFilter = document.getElementById("model-filter");
-  modelFilter.innerHTML = '<option value="">All models</option>' +
-    Object.keys(data.models).map((m) => `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join("");
+    document.getElementById("run-detail-title").textContent = `Run ${runId}`;
 
-  suiteFilter.onchange = () => renderRunDetail(data, suiteFilter.value, modelFilter.value);
-  modelFilter.onchange = () => renderRunDetail(data, suiteFilter.value, modelFilter.value);
-  renderRunDetail(data, "", "");
+    const mNames = Object.keys(data.models || {});
+    const badgeEl = document.getElementById("run-detail-model-badge");
+    if (badgeEl) {
+      badgeEl.textContent = mNames.length > 0 ? mNames.join(", ") : "Completed Run";
+    }
+
+    const metaEl = document.getElementById("run-detail-meta");
+    if (metaEl) {
+      const gpu = Array.isArray(data.hardware?.gpu) ? data.hardware.gpu[0]?.name : data.hardware?.gpu;
+      metaEl.textContent = `${formatRunDate(data.started_at || runId)} · ${data.hardware?.cpu || "CPU"} · ${gpu || "GPU"}`;
+    }
+
+    document.getElementById("run-detail-links").innerHTML = `
+      <a href="/api/runs/${runId}/report.md" target="_blank" class="secondary small" style="text-decoration:none; padding:4px 8px; font-size:11px;">📄 MD</a>
+      <a href="/api/runs/${runId}/report.pdf" target="_blank" class="secondary small" style="text-decoration:none; padding:4px 8px; font-size:11px;">📊 PDF</a>
+      <a href="/api/runs/${runId}/raw.json" target="_blank" class="secondary small" style="text-decoration:none; padding:4px 8px; font-size:11px;">📦 JSON</a>`;
+
+    const suiteNames = new Set();
+    Object.values(data.models).forEach((m) => Object.keys(m.suites).forEach((s) => suiteNames.add(s)));
+    const suiteFilter = document.getElementById("suite-filter");
+    suiteFilter.innerHTML = '<option value="">All suites</option>' +
+      Array.from(suiteNames).map((s) => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join("");
+    const modelFilter = document.getElementById("model-filter");
+    modelFilter.innerHTML = '<option value="">All models</option>' +
+      Object.keys(data.models).map((m) => `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join("");
+
+    suiteFilter.onchange = () => renderRunDetail(data, suiteFilter.value, modelFilter.value);
+    modelFilter.onchange = () => renderRunDetail(data, suiteFilter.value, modelFilter.value);
+    renderRunDetail(data, "", "");
+
+    // Modal Close handlers
+    const closeBtn = document.getElementById("run-detail-close-btn");
+    const closeFooter = document.getElementById("run-detail-close-footer");
+    const compareBtn = document.getElementById("run-detail-compare-btn");
+
+    const closeModal = () => { modal.style.display = "none"; };
+    if (closeBtn) closeBtn.onclick = closeModal;
+    if (closeFooter) closeFooter.onclick = closeModal;
+    modal.onclick = (e) => {
+      if (e.target === modal) closeModal();
+    };
+
+    if (compareBtn) {
+      compareBtn.onclick = () => {
+        state.selectedCompareRuns.add(runId);
+        closeModal();
+        switchView("compare");
+      };
+    }
+
+    modal.style.display = "flex";
+  } catch (err) {
+    showToast(`Failed to load run details: ${apiErrorDetail(err)}`, "error");
+  }
 }
 
 function renderRunDetail(data, suiteFilterVal, modelFilterVal) {
@@ -2334,16 +2392,20 @@ function renderRunDetail(data, suiteFilterVal, modelFilterVal) {
 }
 
 // ---------- Problem Failure Inspector Modal ----------
-function openInspectorModalByData(runId, modelName, suiteName) {
+async function openInspectorModalByData(runId, modelName, suiteName) {
   let runData = state.currentRunData;
   if (!runData || runData.run_id !== runId) {
     if (compareRunCache.has(runId)) {
       runData = compareRunCache.get(runId);
+    } else {
+      try {
+        runData = await api(`/api/runs/${runId}`);
+        compareRunCache.set(runId, runData);
+      } catch (e) {
+        showToast(`Failed to load run data: ${apiErrorDetail(e)}`, "error");
+        return;
+      }
     }
-  }
-  if (!runData) {
-    alert(`Run data for ${runId} is loading, please try again.`);
-    return;
   }
   showInspectorModal(runData, modelName, suiteName);
 }
@@ -2357,7 +2419,7 @@ function showInspectorModal(runData, modelName, suiteName, filterState = "all") 
 
   const modelResult = runData.models[modelName];
   if (!modelResult || !modelResult.suites[suiteName]) {
-    alert("Suite result not found.");
+    showToast("Suite result not found.", "warning");
     return;
   }
   const suiteResult = modelResult.suites[suiteName];
@@ -2475,6 +2537,14 @@ function showInspectorModal(runData, modelName, suiteName, filterState = "all") 
     body.innerHTML = `<p class="empty-state">No problems match filter "${filterState}".</p>`;
   }
 
+  const closeBtn = document.getElementById("inspector-close");
+  if (closeBtn) {
+    closeBtn.onclick = () => { modal.style.display = "none"; };
+  }
+  modal.onclick = (e) => {
+    if (e.target === modal) modal.style.display = "none";
+  };
+
   modal.style.display = "flex";
 }
 
@@ -2579,8 +2649,8 @@ if (pgCopyBtn) {
   pgCopyBtn.addEventListener("click", () => {
     const text = document.getElementById("pg-content").textContent;
     navigator.clipboard.writeText(text).then(() => {
-      alert("Response copied to clipboard!");
-    }).catch((e) => alert("Failed to copy: " + e.message));
+      showToast("Response copied to clipboard!", "success");
+    }).catch((e) => showToast("Failed to copy: " + e.message, "error"));
   });
 }
 
@@ -2763,6 +2833,12 @@ async function loadComparePicker() {
     return matchesSearch && matchesProvider;
   });
 
+  // Default auto-select top 3 runs if none selected yet
+  if (state.selectedCompareRuns.size === 0 && filteredRuns.length > 0) {
+    const topRuns = filteredRuns.slice(0, Math.min(3, filteredRuns.length));
+    topRuns.forEach((r) => state.selectedCompareRuns.add(r.run_id));
+  }
+
   // 3. Baseline Summary Metrics Calculation
   let baseRunData = null;
   if (state.baselineRunId && compareRunCache.has(state.baselineRunId)) {
@@ -2780,13 +2856,13 @@ async function loadComparePicker() {
     const isChecked = state.selectedCompareRuns.has(run.run_id);
     const isBaseline = state.baselineRunId === run.run_id;
 
-    const card = document.createElement("label");
+    const card = document.createElement("div");
     card.className = "compare-card" + (isChecked ? " checked" : "") + (isBaseline ? " baseline" : "");
 
     const cb = document.createElement("input");
     cb.type = "checkbox";
     cb.checked = isChecked;
-    cb.addEventListener("change", (e) => {
+    cb.addEventListener("click", (e) => {
       e.stopPropagation();
       if (cb.checked) state.selectedCompareRuns.add(run.run_id);
       else state.selectedCompareRuns.delete(run.run_id);
@@ -2794,6 +2870,16 @@ async function loadComparePicker() {
       renderCompare();
     });
     card.appendChild(cb);
+
+    card.addEventListener("click", (e) => {
+      if (e.target.closest(".compare-card-actions") || e.target === cb) return;
+      const checked = !state.selectedCompareRuns.has(run.run_id);
+      if (checked) state.selectedCompareRuns.add(run.run_id);
+      else state.selectedCompareRuns.delete(run.run_id);
+      cb.checked = checked;
+      card.classList.toggle("checked", checked);
+      renderCompare();
+    });
 
     const info = document.createElement("div");
     info.className = "compare-card-info";
@@ -3579,9 +3665,9 @@ function exportCompareMarkdown(series, categories, runs) {
   });
 
   navigator.clipboard.writeText(md).then(() => {
-    alert("Comparison report markdown copied to clipboard!");
+    showToast("Comparison report markdown copied to clipboard!", "success");
   }).catch((err) => {
-    alert("Failed to copy to clipboard: " + err.message);
+    showToast("Failed to copy to clipboard: " + err.message, "error");
   });
 }
 
@@ -3790,219 +3876,236 @@ state.hiddenSeries = state.hiddenSeries || new Set();
 
 async function renderCompare() {
   const output = document.getElementById("compare-output");
-  const runIds = Array.from(state.selectedCompareRuns);
-  if (runIds.length === 0) {
-    output.innerHTML = '<p class="empty-state">Select one or more runs above to compare them.</p>';
-    return;
-  }
+  if (!output) return;
 
-  const runs = [];
-  for (const runId of runIds) {
-    if (!compareRunCache.has(runId)) {
-      compareRunCache.set(runId, await api(`/api/runs/${runId}`));
+  try {
+    const runIds = Array.from(state.selectedCompareRuns);
+    if (runIds.length === 0) {
+      output.innerHTML = '<p class="empty-state">Select one or more runs above to compare them.</p>';
+      return;
     }
-    runs.push(compareRunCache.get(runId));
-  }
 
-  const allSeries = [];
-  runs.forEach((run) => {
-    Object.keys(run.models).forEach((modelName) => {
-      allSeries.push({ key: `${run.run_id}::${modelName}`, label: `${modelName} (${run.run_id})`, runId: run.run_id, modelName });
-    });
-  });
+    const runs = [];
+    for (const runId of runIds) {
+      try {
+        if (!compareRunCache.has(runId)) {
+          const rData = await api(`/api/runs/${runId}`);
+          compareRunCache.set(runId, rData);
+        }
+        runs.push(compareRunCache.get(runId));
+      } catch (e) {
+        state.selectedCompareRuns.delete(runId);
+        compareRunCache.delete(runId);
+      }
+    }
 
-  const series = allSeries.filter((s) => !state.hiddenSeries.has(s.key));
+    if (runs.length === 0) {
+      output.innerHTML = '<p class="empty-state">Select one or more runs above to compare them.</p>';
+      return;
+    }
 
-  const suiteSet = new Set();
-  runs.forEach((run) => Object.values(run.models).forEach((m) => Object.keys(m.suites).forEach((s) => {
-    if (s !== "frontier_graded") suiteSet.add(s);
-  })));
-  const categories = DETERMINISTIC_SUITE_ORDER.filter((s) => suiteSet.has(s));
-
-  function getSuite(s, category) {
-    const run = runs.find((r) => r.run_id === s.runId);
-    return run?.models[s.modelName]?.suites[category] || null;
-  }
-
-  output.innerHTML = "";
-
-  const subtabsNav = document.createElement("div");
-  subtabsNav.className = "compare-subtabs";
-
-  const subTabOptions = [
-    { id: "overview", label: "📊 Overview & Verdict" },
-    { id: "charts", label: "📈 Detailed Suite Charts" },
-    { id: "data", label: "📋 Data & Hardware Table" },
-  ];
-
-  subTabOptions.forEach((opt) => {
-    const btn = document.createElement("button");
-    btn.className = "compare-tab-btn" + (state.compareSubTab === opt.id ? " active" : "");
-    btn.textContent = opt.label;
-    btn.onclick = () => {
-      state.compareSubTab = opt.id;
-      renderCompare();
-    };
-    subtabsNav.appendChild(btn);
-  });
-  output.appendChild(subtabsNav);
-
-  const exportBar = document.createElement("div");
-  exportBar.className = "export-bar";
-
-  const exportMdBtn = document.createElement("button");
-  exportMdBtn.className = "secondary";
-  exportMdBtn.textContent = "📋 Copy Markdown Report";
-  exportMdBtn.onclick = () => exportCompareMarkdown(allSeries, categories, runs);
-  exportBar.appendChild(exportMdBtn);
-
-  const exportCsvBtn = document.createElement("button");
-  exportCsvBtn.className = "secondary";
-  exportCsvBtn.textContent = "📥 Download CSV";
-  exportCsvBtn.onclick = () => exportCompareCSV(allSeries, categories, runs);
-  exportBar.appendChild(exportCsvBtn);
-
-  const savings = calculateApiSavings(runs);
-  const savingsBadge = document.createElement("span");
-  savingsBadge.className = "muted";
-  savingsBadge.style.marginLeft = "auto";
-  savingsBadge.title =
-    `Illustrative only, not a live price lookup: ${savings.totalPromptTokens.toLocaleString()} real prompt + ` +
-    `${savings.totalCompletionTokens.toLocaleString()} real completion tokens at a placeholder ` +
-    `$${ILLUSTRATIVE_RATE_PER_M_INPUT}/$${ILLUSTRATIVE_RATE_PER_M_OUTPUT} per 1M tokens.`;
-  savingsBadge.appendChild(document.createTextNode("Illustrative cloud cost: "));
-  const savingsStrong = document.createElement("strong");
-  savingsStrong.style.color = "var(--good)";
-  savingsStrong.textContent = `~$${savings.cost}`;
-  savingsBadge.appendChild(savingsStrong);
-  savingsBadge.appendChild(document.createTextNode(` (${savings.totalProblems} tasks) ⓘ`));
-  exportBar.appendChild(savingsBadge);
-
-  output.appendChild(exportBar);
-
-  // 3. Render Active Sub-tab Content
-  const activeSeries = series.length ? series : allSeries;
-
-  if (state.compareSubTab === "overview") {
-    // 2-Fact Matchup Verdict Banner
-    if (allSeries.length > 0) {
-      let topAccItem = null;
-      let topSpeedItem = null;
-      const allItems = [];
-
-      allSeries.forEach((s) => {
-        let passSum = 0, speedSum = 0, count = 0, passes = 0, problems = 0;
-        categories.forEach((cat) => {
-          const suite = getSuite(s, cat);
-          if (suite) {
-            passSum += suite.pass_rate || 0;
-            speedSum += suite.avg_tokens_per_sec || 0;
-            passes += suite.pass_count || 0;
-            problems += suite.total || 0;
-            count++;
-          }
-        });
-        const meanPass = count ? passSum / count : 0;
-        const meanSpeed = count ? speedSum / count : 0;
-        const itemData = { modelName: s.modelName, meanPass, meanSpeed, runId: s.runId, passes, problems };
-        allItems.push(itemData);
-
-        if (!topAccItem || itemData.meanPass > topAccItem.meanPass) topAccItem = itemData;
-        if (!topSpeedItem || itemData.meanSpeed > topSpeedItem.meanSpeed) topSpeedItem = itemData;
+    const allSeries = [];
+    runs.forEach((run) => {
+      Object.keys(run.models || {}).forEach((modelName) => {
+        allSeries.push({ key: `${run.run_id}::${modelName}`, label: `${modelName} (${run.run_id})`, runId: run.run_id, modelName });
       });
+    });
 
-      let vsBaselineStr = "";
-      if (state.baselineRunId && compareRunCache.has(state.baselineRunId)) {
-        const baseRun = compareRunCache.get(state.baselineRunId);
-        const baseModelObj = Object.values(baseRun.models || {})[0];
-        if (baseModelObj && baseModelObj.suites) {
-          const sVals = Object.values(baseModelObj.suites);
-          const baseMean = sVals.reduce((acc, s) => acc + (s.pass_rate || 0), 0) / (sVals.length || 1);
-          const diffPct = Math.round((topAccItem.meanPass - baseMean) * 100);
-          vsBaselineStr = diffPct >= 0 ? ` (+${diffPct}% vs baseline)` : ` (${diffPct}% vs baseline)`;
+    const series = allSeries.filter((s) => !state.hiddenSeries.has(s.key));
+
+    const suiteSet = new Set();
+    runs.forEach((run) => Object.values(run.models || {}).forEach((m) => Object.keys(m.suites || {}).forEach((s) => {
+      if (s !== "frontier_graded") suiteSet.add(s);
+    })));
+    const categories = DETERMINISTIC_SUITE_ORDER.filter((s) => suiteSet.has(s));
+
+    function getSuite(s, category) {
+      const run = runs.find((r) => r.run_id === s.runId);
+      return run?.models?.[s.modelName]?.suites?.[category] || null;
+    }
+
+    output.innerHTML = "";
+
+    const subtabsNav = document.createElement("div");
+    subtabsNav.className = "compare-subtabs";
+
+    const subTabOptions = [
+      { id: "overview", label: "📊 Overview & Verdict" },
+      { id: "charts", label: "📈 Detailed Suite Charts" },
+      { id: "data", label: "📋 Data & Hardware Table" },
+    ];
+
+    subTabOptions.forEach((opt) => {
+      const btn = document.createElement("button");
+      btn.className = "compare-tab-btn" + (state.compareSubTab === opt.id ? " active" : "");
+      btn.textContent = opt.label;
+      btn.onclick = () => {
+        state.compareSubTab = opt.id;
+        renderCompare();
+      };
+      subtabsNav.appendChild(btn);
+    });
+    output.appendChild(subtabsNav);
+
+    const exportBar = document.createElement("div");
+    exportBar.className = "export-bar";
+
+    const exportMdBtn = document.createElement("button");
+    exportMdBtn.className = "secondary";
+    exportMdBtn.textContent = "📋 Copy Markdown Report";
+    exportMdBtn.onclick = () => exportCompareMarkdown(allSeries, categories, runs);
+    exportBar.appendChild(exportMdBtn);
+
+    const exportCsvBtn = document.createElement("button");
+    exportCsvBtn.className = "secondary";
+    exportCsvBtn.textContent = "📥 Download CSV";
+    exportCsvBtn.onclick = () => exportCompareCSV(allSeries, categories, runs);
+    exportBar.appendChild(exportCsvBtn);
+
+    const savings = calculateApiSavings(runs);
+    const savingsBadge = document.createElement("span");
+    savingsBadge.className = "muted";
+    savingsBadge.style.marginLeft = "auto";
+    savingsBadge.title =
+      `Illustrative only, not a live price lookup: ${savings.totalPromptTokens.toLocaleString()} real prompt + ` +
+      `${savings.totalCompletionTokens.toLocaleString()} real completion tokens at a placeholder ` +
+      `$${ILLUSTRATIVE_RATE_PER_M_INPUT}/$${ILLUSTRATIVE_RATE_PER_M_OUTPUT} per 1M tokens.`;
+    savingsBadge.appendChild(document.createTextNode("Illustrative cloud cost: "));
+    const savingsStrong = document.createElement("strong");
+    savingsStrong.style.color = "var(--good)";
+    savingsStrong.textContent = `~$${savings.cost}`;
+    savingsBadge.appendChild(savingsStrong);
+    savingsBadge.appendChild(document.createTextNode(` (${savings.totalProblems} tasks) ⓘ`));
+    exportBar.appendChild(savingsBadge);
+
+    output.appendChild(exportBar);
+
+    // 3. Render Active Sub-tab Content
+    const activeSeries = series.length ? series : allSeries;
+
+    if (state.compareSubTab === "overview") {
+      // 2-Fact Matchup Verdict Banner
+      if (allSeries.length > 0) {
+        let topAccItem = null;
+        let topSpeedItem = null;
+        const allItems = [];
+
+        allSeries.forEach((s) => {
+          let passSum = 0, speedSum = 0, count = 0, passes = 0, problems = 0;
+          categories.forEach((cat) => {
+            const suite = getSuite(s, cat);
+            if (suite) {
+              passSum += suite.pass_rate || 0;
+              speedSum += suite.avg_tokens_per_sec || 0;
+              passes += suite.pass_count || 0;
+              problems += suite.total || 0;
+              count++;
+            }
+          });
+          const meanPass = count ? passSum / count : 0;
+          const meanSpeed = count ? speedSum / count : 0;
+          const itemData = { modelName: s.modelName, meanPass, meanSpeed, runId: s.runId, passes, problems };
+          allItems.push(itemData);
+
+          if (!topAccItem || itemData.meanPass > topAccItem.meanPass) topAccItem = itemData;
+          if (!topSpeedItem || itemData.meanSpeed > topSpeedItem.meanSpeed) topSpeedItem = itemData;
+        });
+
+        if (topAccItem && topSpeedItem) {
+          let vsBaselineStr = "";
+          if (state.baselineRunId && compareRunCache.has(state.baselineRunId)) {
+            const baseRun = compareRunCache.get(state.baselineRunId);
+            const baseModelObj = Object.values(baseRun.models || {})[0];
+            if (baseModelObj && baseModelObj.suites) {
+              const sVals = Object.values(baseModelObj.suites);
+              const baseMean = sVals.reduce((acc, s) => acc + (s.pass_rate || 0), 0) / (sVals.length || 1);
+              const diffPct = Math.round((topAccItem.meanPass - baseMean) * 100);
+              vsBaselineStr = diffPct >= 0 ? ` (+${diffPct}% vs baseline)` : ` (${diffPct}% vs baseline)`;
+            }
+          }
+
+          const verdictBanner = document.createElement("div");
+          verdictBanner.className = "verdict-banner";
+          const rivals = allItems.filter(
+            (it) => it !== topAccItem &&
+                    !ratesDistinguishable(topAccItem.passes, topAccItem.problems, it.passes, it.problems)
+          );
+          const topCi = wilsonInterval(topAccItem.passes, topAccItem.problems);
+          const ciStr = topCi ? ` [95% CI ${Math.round(topCi[0] * 100)}-${Math.round(topCi[1] * 100)}%]` : "";
+          const speedStr = `Fastest: ${topSpeedItem.modelName} — ${fmtNum(topSpeedItem.meanSpeed, 0)} tok/s.`;
+
+          if (rivals.length > 0) {
+            verdictBanner.textContent =
+              `No clear accuracy winner: ${topAccItem.modelName} leads at ` +
+              `${Math.round(topAccItem.meanPass * 100)}%${ciStr}, but ` +
+              `${rivals.map((r) => r.modelName).join(", ")} ` +
+              `${rivals.length === 1 ? "is" : "are"} within measurement error over ` +
+              `${topAccItem.problems} problems. ${speedStr}`;
+            verdictBanner.title =
+              "Their 95% confidence intervals overlap, so this run cannot separate them. " +
+              "Raise num_problems in config.yaml to narrow the intervals.";
+          } else {
+            verdictBanner.textContent =
+              `🏆 Highest mean pass rate: ${topAccItem.modelName} — ` +
+              `${Math.round(topAccItem.meanPass * 100)}%${ciStr}${vsBaselineStr}. ${speedStr}`;
+            verdictBanner.title =
+              `This lead is larger than measurement error over ${topAccItem.problems} problems.`;
+          }
+          output.appendChild(verdictBanner);
         }
       }
 
-      const verdictBanner = document.createElement("div");
-      verdictBanner.className = "verdict-banner";
-      // State a lead only when the data supports it. Over ~60 problems a
-      // several-point gap has overlapping 95% intervals, so ranking on the raw
-      // mean alone would present measurement noise as a finding.
-      const rivals = allItems.filter(
-        (it) => it !== topAccItem &&
-                !ratesDistinguishable(topAccItem.passes, topAccItem.problems, it.passes, it.problems)
+      output.appendChild(buildParetoChart(activeSeries, categories, getSuite, allSeries));
+      const radarChart = buildRadarChart(activeSeries, categories, getSuite, allSeries);
+      if (radarChart) output.appendChild(radarChart);
+    } else if (state.compareSubTab === "charts") {
+      output.appendChild(
+        buildBarChart({
+          title: "Pass rate by suite",
+          categories,
+          series: activeSeries,
+          allSeries,
+          getValue: (s, cat) => {
+            const suite = getSuite(s, cat);
+            return suite ? Math.round(suite.pass_rate * 100) : null;
+          },
+          formatValue: (v) => `${v}%`,
+          yMax: 100,
+          yTicks: [0, 25, 50, 75, 100],
+        })
       );
-      const topCi = wilsonInterval(topAccItem.passes, topAccItem.problems);
-      const ciStr = topCi ? ` [95% CI ${Math.round(topCi[0] * 100)}-${Math.round(topCi[1] * 100)}%]` : "";
-      const speedStr = `Fastest: ${topSpeedItem.modelName} — ${fmtNum(topSpeedItem.meanSpeed, 0)} tok/s.`;
 
-      if (rivals.length > 0) {
-        verdictBanner.textContent =
-          `No clear accuracy winner: ${topAccItem.modelName} leads at ` +
-          `${Math.round(topAccItem.meanPass * 100)}%${ciStr}, but ` +
-          `${rivals.map((r) => r.modelName).join(", ")} ` +
-          `${rivals.length === 1 ? "is" : "are"} within measurement error over ` +
-          `${topAccItem.problems} problems. ${speedStr}`;
-        verdictBanner.title =
-          "Their 95% confidence intervals overlap, so this run cannot separate them. " +
-          "Raise num_problems in config.yaml to narrow the intervals.";
-      } else {
-        verdictBanner.textContent =
-          `🏆 Highest mean pass rate: ${topAccItem.modelName} — ` +
-          `${Math.round(topAccItem.meanPass * 100)}%${ciStr}${vsBaselineStr}. ${speedStr}`;
-        verdictBanner.title =
-          `This lead is larger than measurement error over ${topAccItem.problems} problems.`;
-      }
-      output.appendChild(verdictBanner);
+      const maxTokPerSec = Math.max(
+        1,
+        ...activeSeries.flatMap((s) => categories.map((cat) => getSuite(s, cat)?.avg_tokens_per_sec || 0))
+      );
+      const tokYMax = Math.ceil(maxTokPerSec / 10) * 10 || 10;
+      output.appendChild(
+        buildBarChart({
+          title: "Tokens/sec by suite",
+          categories,
+          series: activeSeries,
+          allSeries,
+          getValue: (s, cat) => getSuite(s, cat)?.avg_tokens_per_sec ?? null,
+          formatValue: (v) => fmtNum(v, 0),
+          yMax: tokYMax,
+          yTicks: [0, tokYMax / 2, tokYMax],
+        })
+      );
+
+      output.appendChild(buildTTFTChart(activeSeries, categories, getSuite, allSeries));
+      output.appendChild(buildPerSuiteBreakdown(activeSeries, categories, getSuite));
+    } else if (state.compareSubTab === "data") {
+      output.appendChild(buildModelDetailsTable(allSeries, runs));
+      output.appendChild(buildFullComparisonTable(allSeries, categories, getSuite, runs));
     }
 
-    output.appendChild(buildParetoChart(activeSeries, categories, getSuite, allSeries));
-    const radarChart = buildRadarChart(activeSeries, categories, getSuite, allSeries);
-    if (radarChart) output.appendChild(radarChart);
-  } else if (state.compareSubTab === "charts") {
-    output.appendChild(
-      buildBarChart({
-        title: "Pass rate by suite",
-        categories,
-        series: activeSeries,
-        allSeries,
-        getValue: (s, cat) => {
-          const suite = getSuite(s, cat);
-          return suite ? Math.round(suite.pass_rate * 100) : null;
-        },
-        formatValue: (v) => `${v}%`,
-        yMax: 100,
-        yTicks: [0, 25, 50, 75, 100],
-      })
-    );
-
-    const maxTokPerSec = Math.max(
-      1,
-      ...activeSeries.flatMap((s) => categories.map((cat) => getSuite(s, cat)?.avg_tokens_per_sec || 0))
-    );
-    const tokYMax = Math.ceil(maxTokPerSec / 10) * 10 || 10;
-    output.appendChild(
-      buildBarChart({
-        title: "Tokens/sec by suite",
-        categories,
-        series: activeSeries,
-        allSeries,
-        getValue: (s, cat) => getSuite(s, cat)?.avg_tokens_per_sec ?? null,
-        formatValue: (v) => fmtNum(v, 0),
-        yMax: tokYMax,
-        yTicks: [0, tokYMax / 2, tokYMax],
-      })
-    );
-
-    output.appendChild(buildTTFTChart(activeSeries, categories, getSuite, allSeries));
-    output.appendChild(buildPerSuiteBreakdown(activeSeries, categories, getSuite));
-  } else if (state.compareSubTab === "data") {
-    output.appendChild(buildModelDetailsTable(allSeries, runs));
-    output.appendChild(buildFullComparisonTable(allSeries, categories, getSuite, runs));
+    const frontierSection = buildFrontierJudgeSection(activeSeries, runs, getSuite);
+    if (frontierSection) output.appendChild(frontierSection);
+  } catch (err) {
+    console.error("renderCompare error:", err);
+    output.innerHTML = `<div class="card" style="border-color:var(--critical);"><h3 style="color:var(--critical); margin:0;">Comparison Error</h3><p class="muted">${escapeHtml(err.message)}</p></div>`;
   }
-
-  const frontierSection = buildFrontierJudgeSection(activeSeries, runs, getSuite);
-  if (frontierSection) output.appendChild(frontierSection);
 }
 
 // Per-suite, per-problem outcome grid. The aggregate charts above answer
@@ -4339,7 +4442,7 @@ async function loadModelDirectories() {
           });
           loadModelDirectories();
         } catch (e) {
-          alert(`Failed to remove folder: ${apiErrorDetail(e)}`);
+          showToast(`Failed to remove folder: ${apiErrorDetail(e)}`, "error");
         }
       });
       right.appendChild(delBtn);
@@ -4367,10 +4470,12 @@ document.getElementById("settings-dir-add")?.addEventListener("click", async () 
     });
     input.value = "";
     statusEl.innerHTML = '<span style="color:var(--good);">✓ Folder added</span>';
+    showToast("✓ Folder added", "success");
     await loadModelDirectories();
     setTimeout(() => { statusEl.textContent = ""; }, 3000);
   } catch (e) {
     statusEl.innerHTML = `<span style="color:var(--critical);">${apiErrorDetail(e)}</span>`;
+    showToast(`Failed to add folder: ${apiErrorDetail(e)}`, "error");
   }
 });
 
@@ -4382,10 +4487,12 @@ document.getElementById("settings-scan-drives")?.addEventListener("click", async
   try {
     const res = await api("/api/settings/directories/scan", { method: "POST" });
     statusEl.innerHTML = `<span style="color:var(--good);">✓ Scanned drives: discovered ${(res.discovered || []).length} folders</span>`;
+    showToast(`✓ Scanned drives: discovered ${(res.discovered || []).length} folders`, "success");
     await loadModelDirectories();
     setTimeout(() => { statusEl.textContent = ""; }, 4000);
   } catch (e) {
     statusEl.innerHTML = `<span style="color:var(--critical);">${apiErrorDetail(e)}</span>`;
+    showToast(`Scan failed: ${apiErrorDetail(e)}`, "error");
   } finally {
     btn.disabled = false;
   }
@@ -4445,9 +4552,10 @@ function renderKeysList(keys) {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ provider, api_key: input.value }),
         });
+        showToast(`✓ Saved ${label} key`, "success");
         renderKeysList(res.keys);
       } catch (e) {
-        alert(`Failed to save ${label} key: ${apiErrorDetail(e)}`);
+        showToast(`Failed to save ${label} key: ${apiErrorDetail(e)}`, "error");
       }
     });
     row.appendChild(saveBtn);
@@ -4459,9 +4567,10 @@ function renderKeysList(keys) {
     clearBtn.addEventListener("click", async () => {
       try {
         const res = await api(`/api/settings/keys/${provider}`, { method: "DELETE" });
+        showToast(`Cleared ${label} key`, "info");
         renderKeysList(res.keys);
       } catch (e) {
-        alert(`Failed to clear ${label} key: ${apiErrorDetail(e)}`);
+        showToast(`Failed to clear ${label} key: ${apiErrorDetail(e)}`, "error");
       }
     });
     row.appendChild(clearBtn);
