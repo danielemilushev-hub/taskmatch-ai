@@ -131,41 +131,6 @@ const SUITE_DESCRIPTIONS = {
   multi_turn: "multi_turn — evaluates conversational memory, entity-attribute binding, and persistent constraint retention across 3–5 dialogue turns."
 };
 
-// ---------- New Run ----------
-function renderChecklist(container, items, selectedSet) {
-  container.innerHTML = "";
-  items.forEach((item) => {
-    const label = document.createElement("label");
-    label.className = "chip" + (selectedSet.has(item) ? " checked" : "");
-    const cb = document.createElement("input");
-    cb.type = "checkbox";
-    cb.checked = selectedSet.has(item);
-    cb.addEventListener("change", () => {
-      if (cb.checked) selectedSet.add(item);
-      else selectedSet.delete(item);
-      label.classList.toggle("checked", cb.checked);
-    });
-    label.appendChild(cb);
-    label.appendChild(document.createTextNode(item));
-
-    if (SUITE_DESCRIPTIONS[item]) {
-      const infoBtn = document.createElement("span");
-      infoBtn.className = "info-icon";
-      infoBtn.innerHTML = " &#9432;";
-      infoBtn.title = SUITE_DESCRIPTIONS[item];
-      infoBtn.style.cursor = "help";
-      infoBtn.style.opacity = "0.7";
-      infoBtn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        showToast(SUITE_DESCRIPTIONS[item], "info");
-      });
-      label.appendChild(infoBtn);
-    }
-
-    container.appendChild(label);
-  });
-}
-
 // ---------- Model Parsing & Grid Cards ----------
 function parseModelMetadata(name) {
   const meta = {
@@ -797,10 +762,34 @@ function switchToModelSelectionStage() {
 
 async function executeBenchmarkRun(modelName, settings, profileVal) {
   const logEl = document.getElementById("run-log");
+
+  // Frontier judge is now a global Settings toggle (settings-judge-enabled),
+  // not a per-run checkbox -- but the backend only ever includes that phase
+  // when the request explicitly asks for it (see /api/run in webapp/main.py),
+  // so this has to actually read and forward the saved setting, and confirm
+  // the spend, exactly like the old per-run flow did before it was removed.
+  const runFrontierGraded = !!state.judgeSettings?.enabled;
+  if (runFrontierGraded) {
+    const numTasks = state.judgeSettings?.num_tasks ?? "?";
+    const provider = state.judgeSettings?.provider;
+    const model = state.judgeSettings?.model;
+    const proceed = await confirmDialog({
+      title: "This run will spend money",
+      message:
+        `The frontier-graded suite will send ${numTasks} task(s) to ` +
+        `${provider}/${model || "?"} for generation AND grading — ` +
+        `${typeof numTasks === "number" ? numTasks * 2 : "2x"} paid API calls.\n\n` +
+        `This phase is non-deterministic and is billed by your provider.`,
+      confirmLabel: "Run it",
+      danger: true,
+    });
+    if (!proceed) return;
+  }
+
   if (logEl) logEl.textContent = "Initializing benchmark runner...\n";
 
   try {
-    const suites = state.config?.suites ? Object.keys(state.config.suites) : ["json_schema", "coding", "logic_math", "instruction_following", "multi_turn", "tool_calling", "rag_retrieval"];
+    const suites = state.config?.suites ? Object.keys(state.config.suites) : ["json_schema", "coding", "logic_math", "instruction_following", "pattern_reasoning", "long_context", "tool_calling", "multi_turn"];
     const { run_id } = await api("/api/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -808,7 +797,7 @@ async function executeBenchmarkRun(modelName, settings, profileVal) {
         models: [{ name: modelName, ...settings }],
         suites: suites,
         profile: profileVal,
-        run_frontier_graded: false,
+        run_frontier_graded: runFrontierGraded,
       }),
     });
     state.activeRunId = run_id;
@@ -872,6 +861,7 @@ const SUITE_METADATA = {
 };
 
 function renderSuiteGrid(container, suitesConfig, selectedSet) {
+  if (!container) return;
   container.innerHTML = "";
   const suiteNames = Object.keys(suitesConfig);
 
@@ -1054,18 +1044,26 @@ async function loadConfig() {
     if (detectStatus) detectStatus.textContent = "Detection error: " + e.message;
   }
   renderModelGrid(document.getElementById("model-checklist"), modelList, state.selectedModels);
-  renderSuiteGrid(
-    document.getElementById("suite-checklist"),
-    state.config.suites,
-    state.selectedSuites
-  );
+  // #suite-checklist no longer exists -- suite selection UI was dropped in
+  // favor of always running every configured suite (see executeBenchmarkRun,
+  // which reads state.config.suites directly, not state.selectedSuites).
+  // Guarded rather than deleted outright: state.selectedSuites is still
+  // populated above and read elsewhere for display, and renderSuiteGrid
+  // degrading safely here matches every other now-removed-element reference
+  // in this file. This was an unconditional crash before the guard -- it
+  // aborted the rest of loadConfig() on every page load, silently skipping
+  // loadFrontierJudgeCard() and updateRunScopeBar() below.
+  const suiteChecklistEl = document.getElementById("suite-checklist");
+  if (suiteChecklistEl) {
+    renderSuiteGrid(suiteChecklistEl, state.config.suites, state.selectedSuites);
+  }
   await loadFrontierJudgeCard();
   updateRunScopeBar();
-  loadHardwareSpecs();
 }
 
 async function loadFrontierJudgeCard() {
   const card = document.getElementById("frontier-judge-card");
+  if (!card) return;
   const disabledNote = document.getElementById("frontier-judge-disabled-note");
   const disabledText = document.getElementById("frontier-judge-disabled-text");
   try {
@@ -1487,55 +1485,6 @@ if (unloadAllBtn) {
   });
 }
 
-document.getElementById("start-run").addEventListener("click", async () => {
-  const includeFrontierEl = document.getElementById("include-frontier-graded");
-  const runFrontierGraded = !!(includeFrontierEl && includeFrontierEl.checked);
-  const judgeProvider = document.getElementById("run-judge-provider")?.value;
-  const judgeModel = document.getElementById("run-judge-model")?.value.trim();
-  if (runFrontierGraded) {
-    const numTasks = state.judgeSettings?.num_tasks ?? "?";
-    const proceed = await confirmDialog({
-      title: "This run will spend money",
-      message:
-        `The frontier-graded suite will send ${numTasks} task(s) to ` +
-        `${judgeProvider}/${judgeModel || "?"} for generation AND grading — ` +
-        `${typeof numTasks === "number" ? numTasks * 2 : "2x"} paid API calls per local model.\n\n` +
-        `This phase is non-deterministic and is billed by your provider.`,
-      confirmLabel: "Run it",
-      danger: true,
-    });
-    if (!proceed) return;
-  }
-
-  const btn = document.getElementById("start-run");
-  btn.disabled = true;
-  document.getElementById("run-progress").style.display = "block";
-  document.getElementById("run-log").textContent = "";
-  try {
-    const { run_id } = await api("/api/run", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        models: Array.from(state.selectedModels).map((name) => {
-          const s = (state.modelSettings && state.modelSettings[name]) || {};
-          return { name, ...s };
-        }),
-        suites: Array.from(state.selectedSuites),
-        profile: selectedProfile(),
-        run_frontier_graded: runFrontierGraded,
-        judge_override: runFrontierGraded ? { provider: judgeProvider, model: judgeModel } : undefined,
-      }),
-    });
-    state.activeRunId = run_id;
-    localStorage.setItem("localbench-active-run", run_id);
-    document.getElementById("stop-run").style.display = "";
-    document.getElementById("stop-run").disabled = false;
-    pollRun();
-  } catch (e) {
-    document.getElementById("run-log").textContent = "failed to start: " + e.message;
-    btn.disabled = false;
-  }
-});
 
 async function resumeActiveRunIfAny() {
   const savedRunId = localStorage.getItem("localbench-active-run");
@@ -1723,7 +1672,7 @@ document.getElementById("stop-run")?.addEventListener("click", async () => {
   }
 });
 
-document.getElementById("confirm-continue").addEventListener("click", async () => {
+document.getElementById("confirm-continue")?.addEventListener("click", async () => {
   await api(`/api/run/${state.activeRunId}/continue`, { method: "POST" });
 });
 
@@ -2254,7 +2203,15 @@ function fmtNum(x, digits = 2) {
   return x === null || x === undefined ? "n/a" : Number(x).toFixed(digits);
 }
 function fmtPct(x) {
-  return x === null || x === undefined ? "n/a" : Math.round(x * 100) + "%";
+  // One decimal place, not a whole-number round: with suite sizes as small
+  // as 4-10 problems, a single problem's worth of difference is already a
+  // real, meaningful gap (e.g. 1/12 = 8.3 percentage points) that whole-
+  // number rounding can visually collapse two close-but-different pass
+  // rates into the same displayed number. Trims to a bare integer when the
+  // rate is exact (100%, 50%, 0%) so it doesn't read as falsely precise.
+  if (x === null || x === undefined) return "n/a";
+  const rounded = Math.round(x * 1000) / 10;
+  return (Number.isInteger(rounded) ? rounded.toFixed(0) : rounded.toFixed(1)) + "%";
 }
 
 async function showRunDetail(runId) {
@@ -2955,15 +2912,18 @@ async function loadComparePicker() {
 
         const basePass = getMeanPass(baseModelObj);
         const thisPass = getMeanPass(thisModelObj);
-        const diffPass = Math.round((thisPass - basePass) * 100);
+        // 1 decimal, not a whole-number round -- see fmtPct's comment: a
+        // small but real delta shouldn't collapse to "+0%" against baseline.
+        const diffPassRaw = Math.round((thisPass - basePass) * 1000) / 10;
+        const diffPassStr = Number.isInteger(diffPassRaw) ? diffPassRaw.toFixed(0) : diffPassRaw.toFixed(1);
 
         const deltaBadge = document.createElement("span");
-        if (diffPass >= 0) {
+        if (diffPassRaw >= 0) {
           deltaBadge.className = "delta-badge better";
-          deltaBadge.textContent = `🟢 +${diffPass}% pass`;
+          deltaBadge.textContent = `🟢 +${diffPassStr}% pass`;
         } else {
           deltaBadge.className = "delta-badge worse";
-          deltaBadge.textContent = `🔴 ${Math.abs(diffPass)}% pass`;
+          deltaBadge.textContent = `🔴 ${Math.abs(diffPassRaw).toFixed(Number.isInteger(diffPassRaw) ? 0 : 1)}% pass`;
         }
         actions.appendChild(deltaBadge);
       }
@@ -3814,7 +3774,7 @@ function buildRadarChart(series, categories, getSuite) {
       vertexData.push({
         cat,
         passRate,
-        valueText: passRate != null ? `${Math.round(passRate * 100)}%` : "n/a",
+        valueText: fmtPct(passRate),
         px,
         py,
       });
@@ -4019,8 +3979,12 @@ async function renderCompare() {
             if (baseModelObj && baseModelObj.suites) {
               const sVals = Object.values(baseModelObj.suites);
               const baseMean = sVals.reduce((acc, s) => acc + (s.pass_rate || 0), 0) / (sVals.length || 1);
-              const diffPct = Math.round((topAccItem.meanPass - baseMean) * 100);
-              vsBaselineStr = diffPct >= 0 ? ` (+${diffPct}% vs baseline)` : ` (${diffPct}% vs baseline)`;
+              // 1 decimal, not a whole-number round -- see fmtPct's comment:
+              // a small but real lead over the baseline shouldn't collapse
+              // to "+0%" just because it rounds away as a whole number.
+              const diffPctRaw = Math.round((topAccItem.meanPass - baseMean) * 1000) / 10;
+              const diffPctStr = Number.isInteger(diffPctRaw) ? diffPctRaw.toFixed(0) : diffPctRaw.toFixed(1);
+              vsBaselineStr = diffPctRaw >= 0 ? ` (+${diffPctStr}% vs baseline)` : ` (${diffPctStr}% vs baseline)`;
             }
           }
 
@@ -4037,7 +4001,7 @@ async function renderCompare() {
           if (rivals.length > 0) {
             verdictBanner.textContent =
               `No clear accuracy winner: ${topAccItem.modelName} leads at ` +
-              `${Math.round(topAccItem.meanPass * 100)}%${ciStr}, but ` +
+              `${fmtPct(topAccItem.meanPass)}${ciStr}, but ` +
               `${rivals.map((r) => r.modelName).join(", ")} ` +
               `${rivals.length === 1 ? "is" : "are"} within measurement error over ` +
               `${topAccItem.problems} problems. ${speedStr}`;
@@ -4047,7 +4011,7 @@ async function renderCompare() {
           } else {
             verdictBanner.textContent =
               `🏆 Highest mean pass rate: ${topAccItem.modelName} — ` +
-              `${Math.round(topAccItem.meanPass * 100)}%${ciStr}${vsBaselineStr}. ${speedStr}`;
+              `${fmtPct(topAccItem.meanPass)}${ciStr}${vsBaselineStr}. ${speedStr}`;
             verdictBanner.title =
               `This lead is larger than measurement error over ${topAccItem.problems} problems.`;
           }

@@ -436,21 +436,6 @@ tr:hover td { background: var(--accent-soft); }
 .filters { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
 .filters select { width: auto; }
 
-.run-list-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 12px 6px;
-  border-bottom: 1px solid var(--border);
-  cursor: pointer;
-  border-radius: 8px;
-  transition: background .12s ease;
-}
-.run-list-item:last-child { border-bottom: none; }
-.run-list-item:hover, .run-list-item:focus-visible { background: var(--accent-soft); outline: none; }
-.run-list-item .run-id { font-weight: 600; font-size: 13.5px; }
-.run-list-item .meta { color: var(--text-muted); font-size: 12px; margin-top: 2px; }
-
 .dl-links a {
   color: var(--accent);
   text-decoration: none;
@@ -657,29 +642,6 @@ pre.output {
   accent-color: var(--accent);
   cursor: pointer;
 }
-.model-card-settings-btn {
-  background: none;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  color: var(--text-muted);
-  cursor: pointer;
-  padding: 3px 6px;
-  font-size: 13px;
-  line-height: 1;
-  transition: all .15s ease;
-  margin-left: auto;
-  align-self: flex-start;
-}
-.model-card-settings-btn:hover {
-  border-color: var(--accent);
-  color: var(--accent);
-  background: var(--accent-soft);
-}
-.model-card-settings-btn.active {
-  border-color: var(--accent);
-  color: var(--accent);
-  background: var(--accent-soft);
-}
 .model-card-custom-badge {
   display: inline-block;
   padding: 1px 5px;
@@ -689,35 +651,6 @@ pre.output {
   background: rgba(234, 179, 8, 0.15);
   border: 1px solid rgba(234, 179, 8, 0.4);
   color: #facc15;
-}
-.model-card-drawer {
-  display: none;
-  border-top: 1px solid var(--border);
-  padding-top: 10px;
-  margin-top: 8px;
-  flex-direction: column;
-  gap: 10px;
-  cursor: default;
-}
-.model-card-drawer.open {
-  display: flex;
-}
-.model-drawer-section {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.model-drawer-section-title {
-  font-size: 11px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--text-muted);
-}
-.model-settings-row {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
 }
 .model-settings-col {
   flex: 1;
@@ -830,28 +763,6 @@ pre.output {
 .model-vram-label .fit-tag.gpu1 { color: #34d399; }
 .model-vram-label .fit-tag.dual { color: #c084fc; }
 .model-vram-label .fit-tag.spill { color: #f87171; }
-
-.model-preset-row {
-  display: flex;
-  gap: 6px;
-  margin-top: 4px;
-}
-.model-preset-btn {
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  font-size: 10.5px;
-  font-weight: 600;
-  color: var(--text-secondary);
-  padding: 3px 8px;
-  cursor: pointer;
-  transition: all 0.12s ease;
-}
-.model-preset-btn:hover {
-  background: var(--accent-soft);
-  border-color: var(--accent);
-  color: var(--accent);
-}
 
 .model-card-badges {
   display: flex;
@@ -1008,12 +919,6 @@ pre.output {
 
 
 /* ---- Suite Cards Grid & Badges ---- */
-.suite-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-  gap: 12px;
-  width: 100%;
-}
 .suite-card {
   display: flex;
   align-items: flex-start;
@@ -1668,8 +1573,6 @@ nav.tabs button.active {
   white-space: nowrap;
   cursor: help;
 }
-.verdict-tie { color: var(--text-muted); font-style: italic; }
-
 /* ---- Run profile picker ---- */
 .profile-picker { display: flex; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
 .profile-option {

@@ -12,7 +12,18 @@ from pathlib import Path
 
 
 def _fmt_pct(x: float | None) -> str:
-    return f"{x * 100:.0f}%" if x is not None else "n/a"
+    """One decimal place, not a whole-number round -- matches the dashboard's
+    fmtPct(). Suite sizes as small as 4-10 problems mean a single problem's
+    difference is already a real percentage-point gap (e.g. 1/12 = 8.3
+    points) that whole-number rounding could visually collapse two close-
+    but-different pass rates into the same displayed number. Trims to a
+    bare integer when the rate is exact (100%, 50%, 0%) so it doesn't read
+    as falsely precise.
+    """
+    if x is None:
+        return "n/a"
+    rounded = round(x * 1000) / 10
+    return f"{rounded:.0f}%" if rounded == int(rounded) else f"{rounded:.1f}%"
 
 
 def _fmt_num(x: float | None, digits: int = 2) -> str:
