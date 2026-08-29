@@ -1667,10 +1667,19 @@ function pollRun() {
       }
       return;
     }
-    state.pollTimer = setTimeout(poll, 1500);
+    const delay = document.hidden ? 3500 : 1500;
+    state.pollTimer = setTimeout(poll, delay);
   };
   poll();
 }
+
+// Background Resource Optimization: Instantly refresh when user focuses tab
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && state.activeRunId) {
+    clearTimeout(state.pollTimer);
+    pollRun();
+  }
+});
 
 
 document.getElementById("stop-run")?.addEventListener("click", async () => {

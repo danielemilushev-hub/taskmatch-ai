@@ -247,6 +247,13 @@ def build_llama_server_args(model_cfg: dict, gguf_path: str, port: int = 8080) -
 
     args = ["-m", norm_gguf, "--port", str(port), "-ngl", str(ngl)]
 
+    # Thread & CPU performance optimization: Physical cores avoid thread contention
+    try:
+        phys_cores = psutil.cpu_count(logical=False) or max(1, (os.cpu_count() or 4) // 2)
+    except Exception:
+        phys_cores = 6
+    args += ["-t", str(max(1, phys_cores))]
+
     if ctx_len:
         args += ["-c", str(ctx_len)]
     if parallel and parallel != 1:
@@ -262,7 +269,7 @@ def build_llama_server_args(model_cfg: dict, gguf_path: str, port: int = 8080) -
     if mlock:
         args.append("--mlock")
     if batch:
-        args += ["-b", str(batch)]
+        args += ["-b", str(batch), "-ub", "512"]
     if split and split != "none":
         args += ["-sm", str(split)]
 
