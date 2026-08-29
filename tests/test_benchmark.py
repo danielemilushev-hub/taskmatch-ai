@@ -350,6 +350,103 @@ class TestLocalbenchCore(unittest.TestCase):
         self.assertEqual(result.prompt_tokens, 200)
         self.assertAlmostEqual(result.prefill_tokens_per_sec, 200 / 0.3, places=2)
 
+    def test_classify_backend_dir_recognizes_known_flavors(self):
+        from localbench.llamacpp_mgr import _classify_backend_dir
+
+        self.assertEqual(_classify_backend_dir("llama.cpp-win-x86_64-vulkan-avx2-2.31.2"), ("vulkan", "Vulkan"))
+        self.assertEqual(_classify_backend_dir("llama.cpp-win-x86_64-amd-rocm-avx2-2.31.2"), ("rocm", "ROCm"))
+        self.assertEqual(_classify_backend_dir("llama.cpp-win-x86_64-nvidia-cuda-avx2-2.28.2"), ("cuda", "CUDA"))
+        self.assertEqual(_classify_backend_dir("llama.cpp-win-x86_64-avx2-2.31.2"), ("cpu", "CPU"))
+        self.assertIsNone(_classify_backend_dir("some-unrelated-folder"))
+
+    def test_extract_version_orders_correctly_for_latest_pick(self):
+        from localbench.llamacpp_mgr import _extract_version
+
+        self.assertLess(_extract_version("thing-2.24.0"), _extract_version("thing-2.31.2"))
+        self.assertEqual(_extract_version("no-version-here"), (0,))
+
+    def test_probe_backend_devices_parses_multi_gpu_vulkan_output(self):
+        from unittest.mock import patch
+        from localbench.llamacpp_mgr import probe_backend_devices
+
+        fake_stdout = (
+            "Available devices:\n"
+            "  Vulkan0: AMD Radeon RX 7800 XT (16368 MiB, 15405 MiB free)\n"
+            "  Vulkan1: AMD Radeon RX 6650 XT (8176 MiB, 7378 MiB free)\n"
+        )
+
+        class FakeProc:
+            returncode = 0
+            stdout = fake_stdout
+            stderr = ""
+
+        with patch("localbench.llamacpp_mgr.subprocess.run", return_value=FakeProc()):
+            result = probe_backend_devices(r"C:\fake\llama-server.exe")
+
+        self.assertTrue(result["available"])
+        self.assertIsNone(result["error"])
+        self.assertEqual(len(result["devices"]), 2)
+        self.assertEqual(result["devices"][0], {"id": "Vulkan0", "name": "AMD Radeon RX 7800 XT", "total_mb": 16368, "free_mb": 15405})
+
+    def test_probe_backend_devices_empty_list_is_still_available_for_cpu_builds(self):
+        from unittest.mock import patch
+        from localbench.llamacpp_mgr import probe_backend_devices
+
+        class FakeProc:
+            returncode = 0
+            stdout = "no gpu devices found\n"
+            stderr = ""
+
+        with patch("localbench.llamacpp_mgr.subprocess.run", return_value=FakeProc()):
+            result = probe_backend_devices(r"C:\fake\llama-server.exe")
+
+        self.assertTrue(result["available"])
+        self.assertEqual(result["devices"], [])
+
+    def test_probe_backend_devices_names_missing_dll_failure(self):
+        from unittest.mock import patch
+        from localbench.llamacpp_mgr import probe_backend_devices
+
+        class FakeProc:
+            returncode = 3221225781  # STATUS_DLL_NOT_FOUND, observed live on a ROCm build
+            stdout = ""
+            stderr = ""
+
+        with patch("localbench.llamacpp_mgr.subprocess.run", return_value=FakeProc()):
+            result = probe_backend_devices(r"C:\fake\llama-server.exe")
+
+        self.assertFalse(result["available"])
+        self.assertEqual(result["devices"], [])
+        self.assertIn("runtime DLL", result["error"])
+
+    def test_probe_backend_devices_survives_timeout_and_missing_binary(self):
+        import subprocess
+        from unittest.mock import patch
+        from localbench.llamacpp_mgr import probe_backend_devices
+
+        with patch("localbench.llamacpp_mgr.subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="x", timeout=15)):
+            result = probe_backend_devices(r"C:\fake\llama-server.exe", timeout=15)
+        self.assertFalse(result["available"])
+        self.assertIn("timed out", result["error"])
+
+        with patch("localbench.llamacpp_mgr.subprocess.run", side_effect=OSError("no such file")):
+            result = probe_backend_devices(r"C:\does\not\exist.exe")
+        self.assertFalse(result["available"])
+        self.assertIn("no such file", result["error"])
+
+    def test_build_llama_server_args_threads_device_selection(self):
+        from localbench.llamacpp_mgr import build_llama_server_args
+
+        args = build_llama_server_args({"settings": {"devices": ["Vulkan0"]}}, r"C:\models\x.gguf")
+        self.assertIn("-dev", args)
+        self.assertEqual(args[args.index("-dev") + 1], "Vulkan0")
+
+        args_multi = build_llama_server_args({"settings": {"devices": ["Vulkan0", "Vulkan1"]}}, r"C:\models\x.gguf")
+        self.assertEqual(args_multi[args_multi.index("-dev") + 1], "Vulkan0,Vulkan1")
+
+        args_none = build_llama_server_args({}, r"C:\models\x.gguf")
+        self.assertNotIn("-dev", args_none)
+
 
 if __name__ == "__main__":
     unittest.main()

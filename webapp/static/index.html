@@ -113,6 +113,14 @@
             </div>
           </div>
 
+          <!-- GPU Device Selection (comes first: which hardware to use gates which
+               Compute Backend options make sense, e.g. ROCm can't combine 2 GPUs) -->
+          <div id="modal-gpu-devices-wrap" style="display:none;">
+            <label style="font-size:11.5px; font-weight:600; text-transform:uppercase; letter-spacing:0.5px; color:var(--text-muted); display:block; margin-bottom:6px;">GPU(s) to Use</label>
+            <div id="modal-gpu-devices" class="model-settings-chips"></div>
+            <em id="modal-gpu-devices-hint" style="font-size:10.5px; color:var(--text-muted); display:block; margin-top:4px;"></em>
+          </div>
+
           <!-- Settings Grid (2 Columns) -->
           <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:12px;">
             <div class="model-settings-col">
@@ -123,6 +131,13 @@
                 <option value="ollama">Ollama</option>
                 <option value="vllm">vLLM</option>
               </select>
+            </div>
+            <div class="model-settings-col" id="modal-backend-col">
+              <label>Compute Backend</label>
+              <select id="modal-cfg-backend">
+                <option value="">Checking installed backends…</option>
+              </select>
+              <em id="modal-backend-hint" style="font-size:10.5px; color:var(--text-muted); display:block; margin-top:3px;"></em>
             </div>
             <div class="model-settings-col">
               <label>GPU / VRAM Offload</label>
@@ -181,6 +196,18 @@
               <div class="model-toggle-chip active" id="modal-chip-mmap" title="Memory map weights into page cache">📁 mmap (Fast load)</div>
               <div class="model-toggle-chip" id="modal-chip-mlock" title="Lock model in physical RAM to prevent paging">🔒 mlock (Lock RAM)</div>
             </div>
+          </div>
+
+          <!-- Suite Selection -->
+          <div style="padding:14px; background:var(--page); border:1px solid var(--border); border-radius:10px;">
+            <div class="row" style="justify-content:space-between; align-items:center; margin-bottom:8px;">
+              <label style="font-size:12px; font-weight:700; color:var(--text); margin:0;">Select Test Suites to Run</label>
+              <div class="row" style="gap:6px;">
+                <button type="button" class="secondary small" id="modal-suites-all" style="font-size:10.5px; padding:3px 8px;">All</button>
+                <button type="button" class="secondary small" id="modal-suites-none" style="font-size:10.5px; padding:3px 8px;">None</button>
+              </div>
+            </div>
+            <div id="modal-suite-checklist" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:8px;"></div>
           </div>
 
           <!-- Benchmark Scope Profile Picker -->

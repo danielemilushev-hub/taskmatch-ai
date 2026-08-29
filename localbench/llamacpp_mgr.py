@@ -20,17 +20,32 @@ _MANAGED_PROCESS: subprocess.Popen | None = None
 _MANAGED_PORT: int = 8080
 
 
-def find_llama_server_binary(custom_path: str | None = None) -> str | None:
-    """Find a usable llama-server / llama-server.exe binary on the host."""
+def find_llama_server_binary(custom_path: str | None = None, backend: str | None = None) -> str | None:
+    """Find a usable llama-server / llama-server.exe binary on the host.
+
+    `backend` (one of "vulkan"/"rocm"/"cuda"/"cpu"), if given, picks that
+    specific backend's binary via discover_llama_backends() rather than the
+    auto-scored "best" one -- see that function's docstring for why the old
+    auto-pick (Vulkan > ROCm > CUDA > AVX2 by name alone) isn't a safe
+    default: it can silently select a backend that fails to launch.
+    """
     if custom_path and os.path.isfile(custom_path):
         return os.path.abspath(custom_path)
+
+    if backend:
+        backends = discover_llama_backends()
+        match = next((b for b in backends if b["id"] == backend), None)
+        return match["path"] if match else None
 
     # 1. Check system PATH
     found = shutil.which("llama-server") or shutil.which("llama-server.exe")
     if found:
         return os.path.abspath(found)
 
-    # 2. Check LM Studio backends (prioritize Vulkan, then ROCm, then AVX2)
+    # 2. Check LM Studio backends (prioritize Vulkan, then ROCm, then AVX2) --
+    # this legacy auto-pick path is kept only for the no-backend-specified
+    # case; prefer discover_llama_backends() + an explicit backend id, which
+    # is what the dashboard now uses.
     lm_backends = os.path.expanduser("~/.lmstudio/extensions/backends")
     if os.path.isdir(lm_backends):
         candidates = []
@@ -64,6 +79,159 @@ def find_llama_server_binary(custom_path: str | None = None) -> str | None:
             return p
 
     return None
+
+
+# Directory-name substring -> (backend id, human label). Order matters: a
+# ROCm build's path also contains "amd", so ROCm must be checked first or
+# an AMD-CUDA-mislabeled path could never happen, but more importantly a
+# generic "amd" match must not shadow the more specific "rocm" one.
+_BACKEND_NAME_PATTERNS: list[tuple[str, str, str]] = [
+    ("rocm", "rocm", "ROCm"),
+    ("nvidia-cuda", "cuda", "CUDA"),
+    ("cuda", "cuda", "CUDA"),
+    ("vulkan", "vulkan", "Vulkan"),
+]
+
+_VERSION_RE = re.compile(r"(\d+(?:\.\d+){1,3})")
+
+# "  Vulkan0: AMD Radeon RX 7800 XT (16368 MiB, 15405 MiB free)"
+_DEVICE_LINE_RE = re.compile(
+    r"^\s*(?P<id>\S+):\s*(?P<name>.+?)\s*\((?P<total>\d+)\s*MiB,\s*(?P<free>\d+)\s*MiB free\)\s*$"
+)
+
+
+def _classify_backend_dir(dirname: str) -> tuple[str, str] | None:
+    lower = dirname.lower()
+    for substr, backend_id, label in _BACKEND_NAME_PATTERNS:
+        if substr in lower:
+            return backend_id, label
+    if "avx2" in lower or "cpu" in lower:
+        return "cpu", "CPU"
+    return None
+
+
+def _extract_version(dirname: str) -> tuple[int, ...]:
+    m = _VERSION_RE.search(dirname)
+    if not m:
+        return (0,)
+    return tuple(int(part) for part in m.group(1).split("."))
+
+
+def discover_llama_backends() -> list[dict]:
+    """Find the latest installed version of each llama.cpp backend type
+    (vulkan/rocm/cuda/cpu) under LM Studio's bundled backends directory.
+
+    Does NOT verify the binary actually launches -- see probe_backend_devices
+    for that. Returns unverified candidates; the caller decides whether to
+    probe them (probing costs a few seconds per backend, so callers that
+    just need "what versions are installed" shouldn't pay that cost).
+    """
+    lm_backends = os.path.expanduser("~/.lmstudio/extensions/backends")
+    if not os.path.isdir(lm_backends):
+        return []
+
+    best: dict[str, tuple[tuple[int, ...], str, str]] = {}
+    for entry in os.listdir(lm_backends):
+        full_dir = os.path.join(lm_backends, entry)
+        if not os.path.isdir(full_dir):
+            continue
+        classified = _classify_backend_dir(entry)
+        if classified is None:
+            continue
+        backend_id, label = classified
+        binary = os.path.join(full_dir, "llama-server.exe")
+        if not os.path.isfile(binary):
+            binary = os.path.join(full_dir, "llama-server")
+            if not os.path.isfile(binary):
+                continue
+        version_tuple = _extract_version(entry)
+        version_str = ".".join(str(p) for p in version_tuple)
+        current = best.get(backend_id)
+        if current is None or version_tuple > current[0]:
+            best[backend_id] = (version_tuple, version_str, binary)
+
+    return [
+        {"id": backend_id, "label": label_for(backend_id), "path": path, "version": version_str}
+        for backend_id, (_, version_str, path) in best.items()
+    ]
+
+
+def label_for(backend_id: str) -> str:
+    return {"vulkan": "Vulkan", "rocm": "ROCm", "cuda": "CUDA", "cpu": "CPU"}.get(backend_id, backend_id)
+
+
+def probe_backend_devices(binary_path: str, timeout: float = 15.0) -> dict:
+    """Actually attempt to launch `binary_path --list-devices` and parse the
+    result -- the only reliable way to know a backend truly works, as
+    opposed to trusting that its files exist. A backend can be fully
+    installed and still fail to launch (missing runtime DLL, unsupported
+    GPU generation, etc.) -- LM Studio's own compatibility survey can be
+    optimistic about this (observed live: it marked a ROCm build
+    "Compatible" on a machine where directly invoking that exact binary
+    failed with STATUS_DLL_NOT_FOUND), so this doesn't trust any external
+    survey either, including LM Studio's -- it only trusts a real,
+    successful launch of the exact binary this app would actually use.
+
+    Returns {"available": bool, "devices": [...], "error": str | None}.
+    Never raises.
+    """
+    try:
+        proc = subprocess.run(
+            [binary_path, "--list-devices"],
+            cwd=os.path.dirname(binary_path),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return {"available": False, "devices": [], "error": f"timed out after {timeout}s"}
+    except OSError as e:
+        return {"available": False, "devices": [], "error": str(e)}
+
+    if proc.returncode != 0:
+        # Windows STATUS_DLL_NOT_FOUND surfaces as a huge unsigned return
+        # code (3221225781 = 0xC0000135) rather than a normal small exit
+        # status -- name it plainly rather than just printing the number.
+        detail = proc.stderr.strip() or proc.stdout.strip()
+        if proc.returncode == 3221225781 or "0xC0000135" in detail:
+            detail = (detail + " -- ").strip(" -") + "missing a required runtime DLL (commonly fixed by installing the Microsoft Visual C++ Redistributable)"
+        return {
+            "available": False,
+            "devices": [],
+            "error": detail or f"exited with code {proc.returncode}",
+        }
+
+    devices = []
+    for line in proc.stdout.splitlines():
+        m = _DEVICE_LINE_RE.match(line)
+        if m:
+            devices.append(
+                {
+                    "id": m.group("id"),
+                    "name": m.group("name"),
+                    "total_mb": int(m.group("total")),
+                    "free_mb": int(m.group("free")),
+                }
+            )
+
+    # A clean exit means the binary launched and ran successfully -- an
+    # empty device list is expected and correct for a CPU-only build (there
+    # is no GPU to enumerate, not a failure), so it does not mark this
+    # backend unavailable.
+    return {"available": True, "devices": devices, "error": None}
+
+
+def list_llama_backends_with_status() -> list[dict]:
+    """discover_llama_backends() + a real launch probe for each -- the
+    combined result the dashboard actually shows: which backends exist,
+    which of those genuinely work on this machine right now, and their
+    real device lists for GPU selection.
+    """
+    backends = discover_llama_backends()
+    for b in backends:
+        status = probe_backend_devices(b["path"])
+        b.update(status)
+    return backends
 
 
 def list_local_ggufs(search_dirs: list[str] | None = None) -> list[str]:
@@ -244,8 +412,17 @@ def build_llama_server_args(model_cfg: dict, gguf_path: str, port: int = 8080) -
     batch = settings.get("batch_size") or model_cfg.get("batch_size", 2048)
     split = settings.get("split_mode") or model_cfg.get("split_mode")
     ngl = settings.get("gpu_offload_layers") or model_cfg.get("gpu_offload_layers", 99)
+    devices = settings.get("devices") or model_cfg.get("devices")
 
     args = ["-m", norm_gguf, "--port", str(port), "-ngl", str(ngl)]
+
+    if devices:
+        # Restrict the run to specific GPU device ids (e.g. ["Vulkan0"]), as
+        # reported by `--list-devices` / probe_backend_devices(). Selecting a
+        # single device here is also how ROCm is kept from ever being asked
+        # to split work across mismatched GPU generations -- the caller is
+        # responsible for only ever passing one id for a ROCm backend.
+        args += ["-dev", ",".join(devices)]
 
     # Thread & CPU performance optimization: Physical cores avoid thread contention
     try:
@@ -327,15 +504,23 @@ def launch_llama_server(
     port: int = 8080,
     in_terminal: bool = True,
     custom_binary: str | None = None,
+    backend: str | None = None,
 ) -> tuple[bool, str]:
-    """Launch llama-server with the specified model and settings in a terminal or background."""
+    """Launch llama-server with the specified model and settings in a terminal or background.
+
+    `backend`, if given (one of "vulkan"/"rocm"/"cuda"/"cpu"), selects that
+    specific compute backend's binary rather than the legacy auto-pick --
+    callers should only pass a backend the dashboard already verified via
+    probe_backend_devices() as actually launchable on this machine.
+    """
     global _MANAGED_PROCESS, _MANAGED_PORT
     _MANAGED_PORT = port
 
     model_name = model_cfg.get("name") or "model"
-    raw_binary = find_llama_server_binary(custom_binary)
+    raw_binary = find_llama_server_binary(custom_binary, backend=backend)
     if not raw_binary:
-        return False, "Could not find llama-server.exe binary on this machine."
+        reason = f" for backend '{backend}'" if backend else ""
+        return False, f"Could not find llama-server.exe binary{reason} on this machine."
     binary = os.path.normpath(os.path.abspath(raw_binary))
 
     gguf_path = find_model_gguf(model_name)

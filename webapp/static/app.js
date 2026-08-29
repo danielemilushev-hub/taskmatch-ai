@@ -256,6 +256,10 @@ function getModelSettings(modelName) {
       mlock: false,
       batch_size: 2048,
       split_mode: "layer",
+      backend: null,
+      devices: [],
+      gpuSelection: [],
+      suites: [],
       sampling: {
         temperature: 0.2,
         min_p: 0.05,
@@ -280,6 +284,7 @@ function generatePreviewCmd(modelName, s) {
     return cmd;
   } else if (flavor === "llamacpp") {
     let cmd = `llama-server -m "${fullPath}" -ngl 99`;
+    if (s.backend) cmd += ` [${s.backend} build]`;
     if (s.context_length) cmd += ` -c ${s.context_length}`;
     if (s.parallel && s.parallel !== 1) cmd += ` -np ${s.parallel}`;
     if (s.gpu_kv && s.gpu_kv !== "f16") cmd += ` -ctk ${s.gpu_kv} -ctv ${s.gpu_kv}`;
@@ -289,6 +294,7 @@ function generatePreviewCmd(modelName, s) {
     if (s.mlock) cmd += ` --mlock`;
     if (s.batch_size) cmd += ` -b ${s.batch_size}`;
     if (s.split_mode && s.split_mode !== "none") cmd += ` -sm ${s.split_mode}`;
+    if (s.devices && s.devices.length) cmd += ` -dev ${s.devices.join(",")}`;
     return cmd;
   } else if (flavor === "vllm") {
     let cmd = `vllm serve "${modelName}" --gpu-memory-utilization 0.95`;
@@ -578,7 +584,171 @@ function openModelConfigModal(modelName) {
     statusEl.innerHTML = '<span style="color:var(--text-muted); font-size:11.5px;">⚪ Server ready — will auto-launch on Start</span>';
   });
 
+  // --- GPU Device Selection (first) + Compute Backend (reacts to it) ---
+  // Hardware is picked before the engine, not after: which backend even
+  // makes sense depends on which/how-many GPUs are in play (e.g. ROCm can
+  // run a single GPU fine but can't combine two mixed-generation/vendor
+  // cards, which Vulkan can). Backends are probed live every time the modal
+  // opens (fast: a handful of subprocess launches) rather than cached, so
+  // installing a missing runtime DLL or plugging in a GPU is reflected
+  // immediately without a page reload.
+  const backendSel = document.getElementById("modal-cfg-backend");
+  const backendHint = document.getElementById("modal-backend-hint");
+  const devicesWrap = document.getElementById("modal-gpu-devices-wrap");
+  const devicesBox = document.getElementById("modal-gpu-devices");
+  const devicesHint = document.getElementById("modal-gpu-devices-hint");
+  let backendsList = [];
+  let physicalGpus = []; // [{name, total_mb, free_mb}] -- backend-agnostic, deduped by name
+  let selectedGpuNames = new Set();
+
+  // A backend can only be offered if it (a) actually launches on this
+  // machine, and (b) its own probed device list covers every GPU the user
+  // just picked. ROCm additionally can't be offered for more than one GPU
+  // at a time, per this machine's real hardware constraint (mixed RDNA
+  // generations/vendors aren't supported for a combined ROCm run).
+  function computeCompatibility(backend) {
+    if (!backend.available) return { compatible: false, reason: backend.error || "unavailable on this machine" };
+    if (backend.id === "cpu") return { compatible: true, reason: "" };
+    if (selectedGpuNames.size === 0) return { compatible: true, reason: "" };
+    const backendNames = new Set((backend.devices || []).map((d) => d.name));
+    const coversSelection = Array.from(selectedGpuNames).every((n) => backendNames.has(n));
+    if (!coversSelection) return { compatible: false, reason: "doesn't support the selected GPU(s)" };
+    if (backend.id === "rocm" && selectedGpuNames.size > 1) {
+      return { compatible: false, reason: "can't combine multiple GPUs — select exactly 1 GPU" };
+    }
+    return { compatible: true, reason: "" };
+  }
+
+  function renderGpuDeviceChips() {
+    if (physicalGpus.length === 0) {
+      devicesWrap.style.display = "none";
+      return;
+    }
+    devicesWrap.style.display = "block";
+    devicesBox.innerHTML = "";
+    devicesHint.textContent = "Pick which GPU(s) this run should use — the Compute Backend choices below update to match.";
+
+    physicalGpus.forEach((gpu) => {
+      const isActive = selectedGpuNames.has(gpu.name);
+      const chip = document.createElement("div");
+      chip.className = "model-toggle-chip" + (isActive ? " active" : "");
+      chip.title = `${gpu.total_mb} MiB (${gpu.free_mb} MiB free)`;
+      chip.textContent = `${gpu.name} (${(gpu.total_mb / 1024).toFixed(1)}GB)`;
+      chip.onclick = () => {
+        if (isActive) {
+          if (selectedGpuNames.size > 1) selectedGpuNames.delete(gpu.name);
+        } else {
+          selectedGpuNames.add(gpu.name);
+        }
+        renderGpuDeviceChips();
+        populateBackendDropdown();
+        syncAndPreview();
+      };
+      devicesBox.appendChild(chip);
+    });
+  }
+
+  function populateBackendDropdown() {
+    const previousValue = backendSel.value;
+    backendSel.innerHTML = "";
+    const autoOpt = document.createElement("option");
+    autoOpt.value = "";
+    autoOpt.textContent = "Auto (recommended default)";
+    backendSel.appendChild(autoOpt);
+
+    const reasons = [];
+    backendsList.forEach((b) => {
+      const { compatible, reason } = computeCompatibility(b);
+      const opt = document.createElement("option");
+      opt.value = b.id;
+      if (compatible) {
+        const deviceNote = b.devices && b.devices.length ? ` — ${b.devices.length} GPU${b.devices.length > 1 ? "s" : ""}` : "";
+        opt.textContent = `${b.label} (v${b.version})${deviceNote}`;
+      } else {
+        opt.disabled = true;
+        opt.textContent = `${b.label} — ${reason}`;
+        reasons.push(`${b.label}: ${reason}`);
+      }
+      backendSel.appendChild(opt);
+    });
+
+    // Keep the previous choice only if it's still valid for the current GPU
+    // selection; otherwise fall back to Auto rather than silently guessing
+    // a replacement.
+    const stillValid = Array.from(backendSel.options).some((o) => o.value === previousValue && !o.disabled);
+    backendSel.value = stillValid ? previousValue : "";
+    settings.backend = backendSel.value || null;
+    backendHint.textContent = reasons.join(" · ");
+  }
+
+  // Translate the user's backend-agnostic GPU picks into the ACTUAL device
+  // ids the chosen backend's binary expects for -dev (e.g. "Vulkan0") --
+  // each backend enumerates its own ids, so this can only be resolved once
+  // a specific backend (not "Auto") is chosen. Selecting every detected GPU
+  // is the same as no restriction, so that maps to an empty list (no -dev
+  // flag at all), matching pre-existing default behavior exactly.
+  function resolveDeviceIdsForLaunch() {
+    if (!settings.backend) return [];
+    const backend = backendsList.find((b) => b.id === settings.backend);
+    if (!backend || !backend.devices || backend.devices.length === 0) return [];
+    if (selectedGpuNames.size === 0 || selectedGpuNames.size === physicalGpus.length) return [];
+    return backend.devices.filter((d) => selectedGpuNames.has(d.name)).map((d) => d.id);
+  }
+
+  backendSel.innerHTML = '<option value="">Checking installed backends…</option>';
+  api("/api/llamacpp/backends").then((res) => {
+    backendsList = res.backends || [];
+    const seen = new Map();
+    backendsList.forEach((b) => {
+      (b.devices || []).forEach((d) => {
+        if (!seen.has(d.name)) seen.set(d.name, { name: d.name, total_mb: d.total_mb, free_mb: d.free_mb });
+      });
+    });
+    physicalGpus = Array.from(seen.values());
+    selectedGpuNames = new Set(
+      settings.gpuSelection && settings.gpuSelection.length
+        ? physicalGpus.filter((g) => settings.gpuSelection.includes(g.name)).map((g) => g.name)
+        : physicalGpus.map((g) => g.name)
+    );
+    renderGpuDeviceChips();
+    backendSel.value = settings.backend || "";
+    populateBackendDropdown();
+    syncAndPreview();
+  }).catch(() => {
+    backendSel.innerHTML = '<option value="">Auto (probe unavailable)</option>';
+  });
+
+  backendSel.onchange = () => {
+    settings.backend = backendSel.value || null;
+    syncAndPreview();
+  };
+
+  // --- Suite Selection ---
+  const suiteChecklistEl = document.getElementById("modal-suite-checklist");
+  const allSuiteNames = state.config?.suites ? Object.keys(state.config.suites) : [];
+  const modalSelectedSuites = new Set(settings.suites && settings.suites.length ? settings.suites : allSuiteNames);
+  if (suiteChecklistEl && state.config?.suites) {
+    renderSuiteGrid(suiteChecklistEl, state.config.suites, modalSelectedSuites);
+  }
+  const suitesAllBtn = document.getElementById("modal-suites-all");
+  const suitesNoneBtn = document.getElementById("modal-suites-none");
+  if (suitesAllBtn) {
+    suitesAllBtn.onclick = () => {
+      allSuiteNames.forEach((s) => modalSelectedSuites.add(s));
+      renderSuiteGrid(suiteChecklistEl, state.config.suites, modalSelectedSuites);
+    };
+  }
+  if (suitesNoneBtn) {
+    suitesNoneBtn.onclick = () => {
+      modalSelectedSuites.clear();
+      renderSuiteGrid(suiteChecklistEl, state.config.suites, modalSelectedSuites);
+    };
+  }
+
   function syncAndPreview() {
+    settings.suites = Array.from(modalSelectedSuites);
+    settings.gpuSelection = Array.from(selectedGpuNames);
+    settings.devices = resolveDeviceIdsForLaunch();
     settings.runtime_flavor = engineSel.value;
     settings.gpu_offload = gpuSel.value;
     settings.context_length = ctxSel.value ? parseInt(ctxSel.value, 10) : null;
@@ -698,8 +868,12 @@ function openModelConfigModal(modelName) {
 
   runBtn.onclick = async () => {
     syncAndPreview();
+    if (!settings.suites || settings.suites.length === 0) {
+      showToast("Select at least one test suite to run", "error");
+      return;
+    }
     modal.style.display = "none";
-    
+
     // Choose scope profile from modal radio
     const profileRadio = document.querySelector('input[name="modal-run-profile"]:checked');
     const profileVal = profileRadio ? profileRadio.value : "quick";
@@ -733,17 +907,20 @@ function switchToActiveBenchmarkStage(modelName, settings) {
   const heroMeta = document.getElementById("stage-hero-model-meta");
   const engineBadge = document.getElementById("stage-engine-badge");
 
+  const backendLabel = settings.backend ? settings.backend.charAt(0).toUpperCase() + settings.backend.slice(1) : "Auto";
+  const deviceLabel = settings.devices && settings.devices.length ? `${settings.devices.length} GPU${settings.devices.length > 1 ? "s" : ""} selected` : "All GPUs";
+
   if (heroTitle) heroTitle.textContent = modelName;
   if (heroMeta) {
     heroMeta.innerHTML = `
       <span class="model-badge" style="background:rgba(59,130,246,0.15); color:#60a5fa;">Engine: ${settings.runtime_flavor || "llama.cpp"}</span>
       <span class="model-badge" style="background:var(--surface);">Ctx: ${settings.context_length || "32k"}</span>
       <span class="model-badge" style="background:var(--surface);">KV: ${settings.gpu_kv || "Q8_0"}</span>
-      <span class="model-badge" style="background:var(--surface);">Dual GPU Vulkan</span>
+      <span class="model-badge" style="background:var(--surface);">${backendLabel} — ${deviceLabel}</span>
     `;
   }
   if (engineBadge) {
-    engineBadge.textContent = `${settings.runtime_flavor === "lmstudio" ? "LM Studio" : "llama.cpp"} Vulkan (Dual GPU)`;
+    engineBadge.textContent = `${settings.runtime_flavor === "lmstudio" ? "LM Studio" : "llama.cpp"} ${backendLabel} (${deviceLabel})`;
   }
 
   // Instantly render current hardware metrics so the user sees live gauges immediately
@@ -790,7 +967,11 @@ async function executeBenchmarkRun(modelName, settings, profileVal) {
   if (logEl) logEl.textContent = "Initializing benchmark runner...\n";
 
   try {
-    const suites = state.config?.suites ? Object.keys(state.config.suites) : ["json_schema", "coding", "logic_math", "instruction_following", "pattern_reasoning", "long_context", "tool_calling", "multi_turn"];
+    const configuredSuites = state.config?.suites ? Object.keys(state.config.suites) : ["hardware_perf", "json_schema", "coding", "logic_math", "instruction_following", "pattern_reasoning", "long_context", "tool_calling", "multi_turn"];
+    // settings.suites is the modal's per-run suite selection (see
+    // openModelConfigModal); fall back to every configured suite when a
+    // caller doesn't set one (e.g. a re-run path that reuses old settings).
+    const suites = settings.suites && settings.suites.length ? settings.suites : configuredSuites;
     const { run_id } = await api("/api/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },

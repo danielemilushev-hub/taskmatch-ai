@@ -710,6 +710,19 @@ def get_active_model() -> dict:
     return {"active": False, "model": None, "runtime": None, "port": None}
 
 
+@app.get("/api/llamacpp/backends")
+def get_llamacpp_backends() -> dict:
+    """List installed llama.cpp compute backends (Vulkan/ROCm/CUDA/CPU) and,
+    for each, whether it actually launches on this machine right now plus
+    its real GPU device list -- probed live via `--list-devices`, not
+    inferred from file presence or trusted from LM Studio's own compatibility
+    label (which has been observed to mark a backend "Compatible" that
+    failed to launch when actually invoked)."""
+    from localbench import llamacpp_mgr
+    backends = llamacpp_mgr.list_llama_backends_with_status()
+    return {"backends": backends}
+
+
 @app.post("/api/models/load")
 def load_model_endpoint(payload: dict) -> dict:
     """Load a model into the specified runtime engine."""
@@ -719,7 +732,12 @@ def load_model_endpoint(payload: dict) -> dict:
     in_terminal = bool(payload.get("in_terminal", False))
 
     if flavor == "llamacpp":
-        ok, msg = llamacpp_mgr.launch_llama_server(payload, in_terminal=in_terminal, port=payload.get("port", 8080))
+        ok, msg = llamacpp_mgr.launch_llama_server(
+            payload,
+            in_terminal=in_terminal,
+            port=payload.get("port", 8080),
+            backend=payload.get("backend"),
+        )
         if not ok:
             raise HTTPException(400, msg)
         return {"ok": True, "message": msg, "model": name, "runtime": "llamacpp"}
@@ -773,7 +791,9 @@ def launch_llamacpp(payload: dict) -> dict:
     from localbench import llamacpp_mgr
     port = payload.get("port", 8080)
     in_terminal = payload.get("in_terminal", True)
-    ok, msg = llamacpp_mgr.launch_llama_server(payload, port=port, in_terminal=in_terminal)
+    ok, msg = llamacpp_mgr.launch_llama_server(
+        payload, port=port, in_terminal=in_terminal, backend=payload.get("backend")
+    )
     if not ok:
         raise HTTPException(400, msg)
     return {"ok": True, "message": msg}
