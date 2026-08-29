@@ -25,6 +25,7 @@ from .storage import save_run
 from .suites import (
     coding_suite,
     frontier_graded_suite,
+    hardware_perf_suite,
     instruction_following_suite,
     json_schema_suite,
     logic_math_suite,
@@ -396,6 +397,23 @@ def run_benchmark(
         model_result = ModelRunResult(
             model=model_name, runtime_load_info=runtime_info or None
         )
+
+        # Runs first, deliberately -- a hardware/speed baseline (prefill
+        # scaling, sustained decode) that every other suite's numbers for
+        # this model can be read against, before any accuracy suite has run.
+        hardware_perf_cfg = suites_cfg.get("hardware_perf", {})
+        if hardware_perf_cfg.get("enabled", True):
+            log(f"  [{model_name}] running hardware_perf suite...")
+            with ResourceMonitor() as mon:
+                problems = hardware_perf_suite.run(
+                    ctx,
+                    seed=hardware_perf_cfg.get("seed", 42),
+                    call_timeout_seconds=hardware_perf_cfg.get("call_timeout_seconds", 300),
+                    on_progress=_make_progress_logger(log, model_name, should_cancel=should_cancel, on_stats=on_stats, suite_name="hardware_perf"),
+                )
+            model_result.suites["hardware_perf"] = SuiteRunResult(
+                suite="hardware_perf", problems=problems, resource_usage=mon.summary()
+            )
 
         json_schema_cfg = suites_cfg.get("json_schema", {})
         if json_schema_cfg.get("enabled", True):

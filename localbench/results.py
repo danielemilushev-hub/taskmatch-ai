@@ -94,9 +94,25 @@ class ProblemResult:
             return None
         return self.completion_tokens / self.latency_seconds
 
+    @property
+    def prefill_tokens_per_sec(self) -> float | None:
+        """Prompt-processing throughput -- prompt_tokens / ttft_seconds.
+
+        Distinct from tokens_per_sec (decode speed, after the first token):
+        prefill is typically compute-bound and can scale very differently
+        across hardware as context length grows, which decode speed alone
+        doesn't reveal. Generic on any ProblemResult, not just
+        hardware_perf's -- but that suite is the one that deliberately
+        isolates it (tiny max_tokens, so ttft is almost entirely prefill).
+        """
+        if not self.prompt_tokens or not self.ttft_seconds or self.ttft_seconds <= 0:
+            return None
+        return self.prompt_tokens / self.ttft_seconds
+
     def to_dict(self) -> dict:
         d = asdict(self)
         d["tokens_per_sec"] = self.tokens_per_sec
+        d["prefill_tokens_per_sec"] = self.prefill_tokens_per_sec
         return d
 
 

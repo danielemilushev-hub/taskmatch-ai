@@ -282,6 +282,74 @@ class TestLocalbenchCore(unittest.TestCase):
         self.assertIsInstance(dirs, list)
         self.assertTrue(len(dirs) > 0)
 
+    def test_hardware_perf_problems_fixed_shape(self):
+        from localbench.data.hardware_perf_problems import generate_problems, NUM_PROBLEMS
+        problems = generate_problems(seed=42)
+        self.assertEqual(len(problems), NUM_PROBLEMS)
+        self.assertEqual(NUM_PROBLEMS, 6)
+        ids = [p["id"] for p in problems]
+        self.assertEqual(len(ids), len(set(ids)), "problem ids must be unique")
+        prefill_ids = [p["id"] for p in problems if p["task_type"] == "prefill"]
+        decode_ids = [p["id"] for p in problems if p["task_type"] == "decode"]
+        self.assertEqual(len(prefill_ids), 4)
+        self.assertEqual(len(decode_ids), 2)
+
+    def test_hardware_perf_problems_deterministic_per_seed(self):
+        from localbench.data.hardware_perf_problems import generate_problems
+        a = generate_problems(seed=42)
+        b = generate_problems(seed=42)
+        self.assertEqual([p["prompt"] for p in a], [p["prompt"] for p in b])
+
+    def test_hardware_perf_prefill_prompts_scale_in_length(self):
+        # The whole point of the tiering: each successive prefill prompt
+        # should be meaningfully longer than the last, not accidentally
+        # flat or out of order.
+        from localbench.data.hardware_perf_problems import generate_problems
+        problems = generate_problems(seed=42)
+        prefill_lengths = [len(p["prompt"]) for p in problems if p["task_type"] == "prefill"]
+        self.assertEqual(prefill_lengths, sorted(prefill_lengths))
+        self.assertLess(prefill_lengths[0], prefill_lengths[-1] / 10)
+
+    def test_hardware_perf_task_count_not_halved_by_quick_profile(self):
+        # A real bug this locks in: setting num_problems for display purposes
+        # would have made problems_for()'s quick-profile logic halve the
+        # reported count (3 instead of 6), contradicting "always the fixed
+        # set" -- see webapp/main.py's _suite_profile_count.
+        from localbench.data.hardware_perf_problems import NUM_PROBLEMS
+        from localbench.profiles import problems_for
+        # hardware_perf is deliberately NOT in PROFILE_SIZES and never has
+        # num_problems set in config, so the generic path returns None here --
+        # webapp/main.py's _suite_profile_count special-cases it to
+        # NUM_PROBLEMS instead of calling problems_for() at all.
+        self.assertIsNone(problems_for("hardware_perf", "quick", None))
+        self.assertEqual(NUM_PROBLEMS, 6)
+
+    def test_hardware_perf_suite_grades_on_completion_not_correctness(self):
+        from localbench.suites.hardware_perf_suite import _run_one
+        from localbench.engine import ChatResult
+
+        class FakeCtx:
+            def call(self, messages, **kwargs):
+                return ChatResult(
+                    success=True,
+                    content="anything at all, content is irrelevant here",
+                    finish_reason="length",
+                    latency_seconds=1.2,
+                    ttft_seconds=0.3,
+                    prompt_tokens=200,
+                    completion_tokens=8,
+                    requested_max_tokens=8,
+                )
+
+        problem = {"id": "prefill_tiny", "task_type": "prefill", "prompt": "x", "max_tokens": 8}
+        result = _run_one(problem, FakeCtx(), timeout_seconds=30)
+        # Truncated (finish_reason=length) elsewhere means "wrong" or
+        # "loop_detected" -- here it just means the speed probe completed
+        # and produced real timing data, which is all this suite grades on.
+        self.assertTrue(result.passed)
+        self.assertEqual(result.prompt_tokens, 200)
+        self.assertAlmostEqual(result.prefill_tokens_per_sec, 200 / 0.3, places=2)
+
 
 if __name__ == "__main__":
     unittest.main()

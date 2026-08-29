@@ -17,8 +17,24 @@ paid frontier one, backed by numbers instead of a guess.
 
 ## What it measures
 
-Six fully deterministic job suites (no LLM-as-judge — every result is
-exact-match, schema-validated, or actually executed):
+**hardware_perf** runs first, before anything else, and is different in kind
+from every other suite: it measures raw speed, not correctness. Prefill
+throughput (prompt tokens processed per second) at four context-length tiers
+(~200 / 1,000 / 4,000 / 8,000 tokens), plus sustained decode speed on two
+longer generations. This is the suite for the "which hardware handles which
+model best" question — a live run on an RX 7800 XT went from 85 tok/s
+prefill at 207 tokens of context to 860 tok/s at 7,080 tokens, a real,
+10x-scaling difference a single-length test would never surface. Because
+"passed" here just means the call completed (not that an answer was
+correct), it's deliberately excluded from the pass-rate/verdict/radar-chart
+comparisons the other suites feed — mixing a suite where nearly everything
+trivially "passes" into an accuracy mean would inflate it without saying
+anything about accuracy. Always runs the same fixed 6-problem set regardless
+of Quick/Full profile, since there's no statistical-sampling reason to run
+fewer or more of the same speed measurement.
+
+Beyond that, eight fully deterministic accuracy job suites (no LLM-as-judge
+— every result is exact-match, schema-validated, or actually executed):
 
 - **json_schema** — prompts the model for structured JSON against a
   procedurally generated schema (randomised field types, enums, numeric
@@ -43,6 +59,11 @@ exact-match, schema-validated, or actually executed):
   planted "needle" value to retrieve or a mechanically-injected bug to
   locate by line number; can use a real file on your machine or a bundled
   synthetic fallback.
+- **tool_calling** — tests OpenAI-compatible function calling: correct tool
+  selection, JSON argument schema compliance, and a negative control that
+  checks the model doesn't hallucinate a tool call when none is warranted.
+- **multi_turn** — evaluates conversational memory, entity-attribute
+  binding, and persistent constraint retention across 3-5 dialogue turns.
 
 Every run also captures: total latency, time-to-first-token (TTFT, measured
 via streaming — separates prefill/"thinking" time from raw decode speed),
@@ -59,12 +80,13 @@ stopped talking on its own, a real practical weakness worth knowing about
 separately from raw correctness. See Config notes below for how each of
 these is detected.
 
-**Five of the six suites generate their problems from a seed**, so the exact
-tasks cannot have appeared in any training corpus — the contamination that
-undermines most static public benchmarks. Every pass rate is reported with a
-95% confidence interval, and the head-to-head verdict refuses to name a
-winner when the intervals overlap, rather than presenting measurement noise
-as a result.
+**Most accuracy suites generate their problems from a seed** (json_schema,
+coding, logic_math, instruction_following, pattern_reasoning, long_context,
+hardware_perf), so the exact tasks cannot have appeared in any training
+corpus — the contamination that undermines most static public benchmarks.
+Every pass rate is reported with a 95% confidence interval, and the
+head-to-head verdict refuses to name a winner when the intervals overlap,
+rather than presenting measurement noise as a result.
 
 A seventh, opt-in **frontier_graded** suite exists for open-ended tasks that
 can't be graded deterministically (see below) — it's never mixed into the

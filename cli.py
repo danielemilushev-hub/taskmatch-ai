@@ -17,6 +17,7 @@ from localbench.config import bootstrap_config, load_config
 from localbench.runner import run_benchmark
 
 ALL_SUITES = [
+    "hardware_perf",
     "json_schema",
     "coding",
     "logic_math",

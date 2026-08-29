@@ -42,6 +42,13 @@ models:
 # pattern_reasoning problem (0/10) and several others -- these overrides
 # were raised in response to that real result, not guessed in advance.
 suites:
+  hardware_perf:
+    enabled: true
+    seed: 42
+    # Prefill probes use a tiny max_tokens (8) so ttft is essentially all
+    # prefill; the decode probes use 1024/4096 internally. This timeout is
+    # generous headroom for the 4096-token decode tier on slow hardware.
+    call_timeout_seconds: 300
   # Token budgets below are tiered on real evidence, not guessed: every
   # legitimate (non-looping) answer observed across live testing finished
   # under ~3,200 tokens, but coding/pattern_reasoning specifically also

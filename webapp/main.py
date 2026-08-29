@@ -26,6 +26,7 @@ from fastapi.staticfiles import StaticFiles
 
 from localbench import report, settings_store, storage
 from localbench.config import load_config
+from localbench.data.hardware_perf_problems import NUM_PROBLEMS as HARDWARE_PERF_NUM_PROBLEMS
 from localbench.profiles import DEFAULT_PROFILE, PROFILES, problems_for
 from localbench.engine import RunContext
 from localbench.json_extract import extract_json
@@ -36,6 +37,7 @@ run_manager = RunManager(results_dir=load_config().get("output", {}).get("result
 
 STATIC_DIR = Path(__file__).parent / "static"
 ALL_SUITES = [
+    "hardware_perf",
     "json_schema",
     "coding",
     "logic_math",
@@ -69,11 +71,26 @@ def index() -> FileResponse:
 
 
 def _get_suite_task_count(name: str, config: dict) -> int:
+    if name == "hardware_perf":
+        return HARDWARE_PERF_NUM_PROBLEMS
     s_cfg = config.get("suites", {}).get(name, {})
     count = problems_for(name, "full", s_cfg.get("num_problems"))
     if count is not None:
         return count
     return s_cfg.get("num_problems", 0)
+
+
+def _suite_profile_count(name: str, profile: str, config: dict) -> int | None:
+    # hardware_perf runs the same fixed set regardless of profile -- it
+    # characterizes hardware, it isn't a statistically-sampled accuracy
+    # measurement, so there's no "fewer samples for a faster baseline" here.
+    # problems_for()'s generic quick-profile halving would otherwise
+    # misreport this suite's actual (unchanging) task count.
+    if name == "hardware_perf":
+        return HARDWARE_PERF_NUM_PROBLEMS
+    return problems_for(
+        name, profile, config.get("suites", {}).get(name, {}).get("num_problems")
+    )
 
 
 @app.get("/api/config")
@@ -86,12 +103,8 @@ def get_config() -> dict:
             name: {
                 "enabled": config.get("suites", {}).get(name, {}).get("enabled", True),
                 "task_count": _get_suite_task_count(name, config),
-                "quick_count": problems_for(
-                    name, "quick", config.get("suites", {}).get(name, {}).get("num_problems")
-                ),
-                "full_count": problems_for(
-                    name, "full", config.get("suites", {}).get(name, {}).get("num_problems")
-                ),
+                "quick_count": _suite_profile_count(name, "quick", config),
+                "full_count": _suite_profile_count(name, "full", config),
             }
             for name in ALL_SUITES
         },

@@ -121,6 +121,7 @@ function confirmDialog({ title = "Confirm", message = "", confirmLabel = "Confir
 }
 
 const SUITE_DESCRIPTIONS = {
+  hardware_perf: "hardware_perf — measures raw speed, not correctness: prefill throughput at 4 context-length tiers (~200/1k/4k/8k tokens) and sustained decode speed on two longer generations. Runs first, as a hardware/speed baseline. Not part of the accuracy pass-rate/verdict comparisons.",
   json_schema: "json_schema — asks the model to produce structured JSON matching a given schema (nested objects, enums, regex patterns, etc.), validated with jsonschema. Tests instruction-precision for structured output.",
   coding: "coding — 8 small HumanEval-style problems (factorial, palindrome check, binary search, etc.). The model's code is actually executed in a sandboxed subprocess against real test cases.",
   logic_math: "logic_math — synthetic arithmetic and logic puzzles generated dynamically (exact match ground truth). Tests basic reasoning without needing outside knowledge.",
@@ -810,6 +811,12 @@ async function executeBenchmarkRun(modelName, settings, profileVal) {
 }
 
 const SUITE_METADATA = {
+  hardware_perf: {
+    icon: "⚡",
+    title: "Hardware Performance",
+    description: "Prefill scaling (4 context-length tiers) and sustained decode speed — raw hardware speed, not correctness.",
+    info: "hardware_perf — measures raw speed, not correctness: prefill throughput at 4 context-length tiers (~200/1k/4k/8k tokens) and sustained decode speed on two longer generations. Runs first, as a hardware/speed baseline. Not part of the accuracy pass-rate/verdict comparisons.",
+  },
   json_schema: {
     icon: "⚙️",
     title: "JSON Schema",
@@ -2425,6 +2432,7 @@ function showInspectorModal(runData, modelName, suiteName, filterState = "all") 
       <span>Latency: ${fmtNum(p.latency_seconds)}s</span>
       <span>TTFT: ${fmtNum(p.ttft_seconds)}s</span>
       <span>Tokens/sec: ${fmtNum(p.tokens_per_sec)}</span>
+      ${p.prefill_tokens_per_sec != null ? `<span title="Prompt tokens processed per second (prompt_tokens / TTFT) -- prefill throughput, distinct from decode speed above.">Prefill tok/s: ${fmtNum(p.prefill_tokens_per_sec)}</span>` : ""}
       ${p.truncated ? '<span style="color:var(--serious)">TRUNCATED</span>' : ""}
       ${p.loop_detected ? '<span style="color:var(--critical)">LOOP DETECTED</span>' : ""}
       ${p.early_exit ? '<span style="color:var(--good)" title="A correct, already-verified answer was found in the stream, but the model never stopped talking on its own -- generation was cut off there instead of waiting out max_tokens.">SOLVED, DID NOT TERMINATE</span>' : ""}
