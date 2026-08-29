@@ -164,6 +164,22 @@ def _build_runtime_load_cmd(model_cfg: dict) -> str | None:
 
 def _switch_to_model(model_cfg: dict, base_url: str, unload_all_cmd: str | None, log, confirm) -> None:
     name = model_cfg["name"]
+    flavor = model_cfg.get("runtime_flavor") or (model_cfg.get("settings") or {}).get("runtime_flavor")
+
+    if flavor == "llamacpp":
+        from . import llamacpp_mgr
+        log(f"launching llama-server terminal for '{name}'...")
+        ok, msg = llamacpp_mgr.launch_llama_server(model_cfg, in_terminal=True)
+        if not ok:
+            raise ModelSwitchError(msg)
+        log(f"{msg} -- waiting for readiness on {base_url}...")
+        if not llamacpp_mgr.wait_for_server_ready(base_url, timeout_seconds=45.0):
+            raise ModelSwitchError(
+                f"llama-server was launched but did not report ready on {base_url}/models within 45s. Check the terminal window for details."
+            )
+        log(f"llama-server is online and ready on {base_url}")
+        return
+
     cmd = _build_runtime_load_cmd(model_cfg)
 
     if cmd:
@@ -188,6 +204,13 @@ def _switch_to_model(model_cfg: dict, base_url: str, unload_all_cmd: str | None,
 
 
 def _unload_model(model_cfg: dict, log) -> None:
+    flavor = model_cfg.get("runtime_flavor") or (model_cfg.get("settings") or {}).get("runtime_flavor")
+    if flavor == "llamacpp":
+        from . import llamacpp_mgr
+        log("stopping llama.cpp server...")
+        llamacpp_mgr.stop_llama_server()
+        return
+
     switch = model_cfg.get("switch") or {}
     unload_cmd = switch.get("unload_cmd")
     if unload_cmd:

@@ -7,6 +7,7 @@ Run via `python cli.py serve`, or directly with:
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -114,59 +115,156 @@ def get_hardware_specs() -> dict:
 @app.get("/api/models/detect")
 def detect_models() -> dict:
     """Query the configured runtime directly for what's actually loadable
-    right now -- lets the dashboard offer live model selection instead of
-    only whatever's hand-typed into config.yaml."""
+    right now, and merge any local GGUF models found in configured model directories."""
+    from localbench import llamacpp_mgr
     config = load_config()
     base_url = config["runtime"]["base_url"]
+    runtime_ids = []
     try:
-        resp = requests.get(base_url.rstrip("/") + "/models", timeout=10)
-        resp.raise_for_status()
-        ids = [m.get("id") for m in resp.json().get("data", [])]
-        return {"models": ids}
-    except requests.exceptions.RequestException as e:
-        raise HTTPException(status_code=502, detail=f"could not reach runtime at {base_url}: {e}")
+        resp = requests.get(base_url.rstrip("/") + "/models", timeout=4)
+        if resp.status_code == 200:
+            runtime_ids = [m.get("id") for m in resp.json().get("data", []) if m.get("id")]
+    except Exception:
+        pass
+
+    # Discover local GGUF files
+    local_ggufs = llamacpp_mgr.scan_all_local_models()
+
+    seen = set()
+    combined = []
+    for mid in runtime_ids:
+        if mid and mid.lower() not in seen:
+            seen.add(mid.lower())
+            combined.append(mid)
+    for key, meta in local_ggufs.items():
+        name = meta.get("display_name") or key
+        if name and name.lower() not in seen:
+            seen.add(name.lower())
+            combined.append(name)
+
+    if not combined:
+        raise HTTPException(status_code=502, detail=f"No models detected on runtime ({base_url}) or local model folders.")
+    return {"models": combined}
 
 
 @app.get("/api/models/catalog")
 def models_catalog() -> dict:
     """Richer per-model metadata (size, quantization, params, context length,
-    vision/tool-use capability flags) for every model already downloaded --
-    not just the currently-loaded one. Best-effort: only works when LM
-    Studio's `lms` CLI is on PATH; returns an empty catalog otherwise so the
-    UI can fall back to bare model IDs from /api/models/detect rather than
-    fabricate data for runtimes this doesn't support (Ollama/llama.cpp)."""
-    lms_path = shutil.which("lms")
-    if not lms_path:
-        return {"models": {}}
-    try:
-        proc = subprocess.run(
-            [lms_path, "ls", "--json"], capture_output=True, text=True, timeout=15
-        )
-        if proc.returncode != 0 or not proc.stdout.strip():
-            return {"models": {}}
-        entries = json.loads(proc.stdout)
-    except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError):
-        return {"models": {}}
-
+    vision/tool-use capability flags) for every model already downloaded from
+    LM Studio, Ollama, and all local GGUF folders."""
+    from localbench import llamacpp_mgr
     catalog = {}
-    for entry in entries:
-        key = entry.get("modelKey") or entry.get("indexedModelIdentifier")
-        if not key:
-            continue
-        quant = entry.get("quantization") or {}
-        catalog[key] = {
-            "display_name": entry.get("displayName"),
-            "publisher": entry.get("publisher"),
-            "size_bytes": entry.get("sizeBytes"),
-            "params": entry.get("paramsString"),
-            "architecture": entry.get("architecture"),
-            "quantization": quant.get("name"),
-            "context_length": entry.get("maxContextLength"),
-            "vision": entry.get("vision"),
-            "tool_use": entry.get("trainedForToolUse"),
-            "type": entry.get("type"),
-        }
+
+    # 1. LMS catalog if available
+    lms_path = shutil.which("lms")
+    if lms_path:
+        try:
+            proc = subprocess.run(
+                [lms_path, "ls", "--json"], capture_output=True, text=True, timeout=3
+            )
+            if proc.returncode == 0 and proc.stdout.strip():
+                entries = json.loads(proc.stdout)
+                for entry in entries:
+                    key = entry.get("modelKey") or entry.get("indexedModelIdentifier")
+                    if not key:
+                        continue
+                    quant = entry.get("quantization") or {}
+                    catalog[key] = {
+                        "display_name": entry.get("displayName"),
+                        "publisher": entry.get("publisher"),
+                        "size_bytes": entry.get("sizeBytes"),
+                        "params": entry.get("paramsString"),
+                        "architecture": entry.get("architecture"),
+                        "quantization": quant.get("name"),
+                        "context_length": entry.get("maxContextLength"),
+                        "vision": entry.get("vision"),
+                        "tool_use": entry.get("trainedForToolUse"),
+                        "type": entry.get("type"),
+                        "file_path": entry.get("path"),
+                    }
+        except Exception:
+            pass
+
+    # 2. Local GGUF scanner
+    local_ggufs = llamacpp_mgr.scan_all_local_models()
+    for key, meta in local_ggufs.items():
+        display_name = meta.get("display_name") or key
+        matched_key = None
+        for k in catalog:
+            if k.lower() == key or k.lower() == display_name.lower():
+                matched_key = k
+                break
+        if matched_key:
+            if not catalog[matched_key].get("file_path") and meta.get("file_path"):
+                catalog[matched_key]["file_path"] = meta["file_path"]
+        else:
+            catalog[display_name] = {
+                "display_name": display_name,
+                "publisher": "local",
+                "size_bytes": meta.get("size_bytes"),
+                "params": meta.get("params"),
+                "architecture": meta.get("architecture"),
+                "quantization": meta.get("quantization"),
+                "context_length": 32768,
+                "vision": False,
+                "tool_use": False,
+                "type": "gguf",
+                "file_path": meta.get("file_path"),
+            }
+
     return {"models": catalog}
+
+
+@app.get("/api/settings/directories")
+def get_directories() -> dict:
+    from localbench import settings_store
+    dirs = settings_store.get_model_directories()
+    stats = []
+    for d in dirs:
+        count = 0
+        if os.path.isdir(d):
+            try:
+                for root, _, files in os.walk(d):
+                    count += sum(1 for f in files if f.lower().endswith(".gguf") and not f.lower().startswith("mmproj"))
+            except Exception:
+                pass
+        stats.append({"path": d, "exists": os.path.isdir(d), "gguf_count": count})
+    return {"directories": stats}
+
+
+@app.post("/api/settings/directories")
+def add_directory(payload: dict) -> dict:
+    from localbench import settings_store
+    path = payload.get("path")
+    if not path or not path.strip():
+        raise HTTPException(400, "Directory path is required")
+    try:
+        settings_store.add_model_directory(path.strip())
+        return {"ok": True}
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.delete("/api/settings/directories")
+def remove_directory(payload: dict) -> dict:
+    from localbench import settings_store
+    path = payload.get("path")
+    if not path:
+        raise HTTPException(400, "Directory path is required")
+    settings_store.remove_model_directory(path)
+    return {"ok": True}
+
+
+@app.post("/api/settings/directories/scan")
+def scan_drives() -> dict:
+    from localbench import llamacpp_mgr, settings_store
+    found = llamacpp_mgr.auto_scan_drives()
+    for f in found:
+        try:
+            settings_store.add_model_directory(f)
+        except Exception:
+            pass
+    return {"ok": True, "discovered": found}
 
 
 @app.get("/api/settings")
@@ -549,6 +647,27 @@ def run_custom(payload: dict) -> dict:
                 result["schema_error"] = f"{list(e.absolute_path)}: {e.message}"
 
     return result
+
+
+@app.post("/api/llamacpp/launch")
+def launch_llamacpp(payload: dict) -> dict:
+    """Launch llama-server.exe in a dedicated terminal window with the specified model and flags."""
+    from localbench import llamacpp_mgr
+    port = payload.get("port", 8080)
+    in_terminal = payload.get("in_terminal", True)
+    ok, msg = llamacpp_mgr.launch_llama_server(payload, port=port, in_terminal=in_terminal)
+    if not ok:
+        raise HTTPException(400, msg)
+    return {"ok": True, "message": msg}
+
+
+@app.post("/api/llamacpp/stop")
+def stop_llamacpp(payload: dict | None = None) -> dict:
+    """Stop any currently running llama-server process."""
+    from localbench import llamacpp_mgr
+    port = (payload or {}).get("port", 8080)
+    stopped = llamacpp_mgr.stop_llama_server(port=port)
+    return {"ok": True, "stopped": stopped}
 
 
 app.mount("/static", NoCacheStaticFiles(directory=STATIC_DIR), name="static")

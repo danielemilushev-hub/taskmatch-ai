@@ -46,11 +46,20 @@
           <button class="secondary small" id="model-deselect-all">Deselect All</button>
         </div>
       </div>
-      <div class="row" style="margin-bottom: 12px; align-items: center;">
+      <div class="row" style="margin-bottom: 10px; align-items: center; flex-wrap: wrap; gap: 8px;">
         <button class="secondary" id="detect-models">Detect live models</button>
-        <span class="muted" id="detect-status" style="margin-left: 8px;"></span>
+        <span class="muted" id="detect-status" style="margin-left: 4px;"></span>
         <span class="muted" id="model-select-count" style="margin-left: auto; font-weight: 600;"></span>
       </div>
+
+      <!-- Quick Filter Pills -->
+      <div class="filter-pills-bar" id="model-filter-pills">
+        <div class="filter-pill active" data-filter="all">All Models <span class="pill-count" id="pill-count-all">0</span></div>
+        <div class="filter-pill" data-filter="gpu1">⚡ Fits RX 7800 XT (16GB) <span class="pill-count" id="pill-count-gpu1">0</span></div>
+        <div class="filter-pill" data-filter="dual">🔥 Dual GPU (24GB) <span class="pill-count" id="pill-count-dual">0</span></div>
+        <div class="filter-pill" data-filter="gguf">📁 Local GGUFs <span class="pill-count" id="pill-count-gguf">0</span></div>
+      </div>
+
       <div class="model-grid" id="model-checklist"></div>
     </div>
 
@@ -354,7 +363,25 @@
           </div>
         </div>
 
-        <!-- 2. Dashboard Preferences -->
+        <!-- 2. Model Directories & GGUF Storage -->
+        <div class="card">
+          <div class="row" style="justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <h2 style="margin:0;">📂 Model Folders & GGUF Storage</h2>
+            <button class="secondary small" id="settings-scan-drives" title="Quickly search all drive roots (C:\, D:\) for GGUF folders">🔍 Auto-Scan Drives</button>
+          </div>
+          <p class="muted">Directories scanned for local <code>.gguf</code> model weights on this PC (LM Studio, custom folders, C:, D:).</p>
+          
+          <div id="settings-directories-list" style="display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px;"></div>
+
+          <label class="field">Add Model Directory</label>
+          <div class="row" style="gap: 8px;">
+            <input type="text" id="settings-dir-input" placeholder="e.g. D:\models or C:\AI\GGUF" style="flex:1;">
+            <button class="secondary" id="settings-dir-add">+ Add Folder</button>
+          </div>
+          <span class="muted" id="settings-dir-status" style="font-size: 11px; margin-top: 4px; display: block;"></span>
+        </div>
+
+        <!-- 3. Dashboard Preferences -->
         <div class="card">
           <h2>🎨 Dashboard & Interface Preferences</h2>
           <p class="muted">Customize theme style and default model comparison behavior.</p>
@@ -464,10 +491,11 @@
     <div class="modal-filters row" style="margin-bottom:12px; justify-content:space-between;">
       <span class="muted" id="inspector-summary"></span>
       <div class="checklist" id="inspector-filter-chips"></div>
-    </div>
     <div class="modal-body" id="inspector-body"></div>
   </div>
 </div>
+
+<div class="toast-container" id="toast-container"></div>
 
 <script src="/static/app.js"></script>
 </body>

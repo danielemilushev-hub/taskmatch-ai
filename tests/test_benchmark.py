@@ -1,3 +1,4 @@
+import os
 import unittest
 from localbench.json_extract import extract_json
 from localbench.hardware import get_hardware_snapshot
@@ -233,7 +234,57 @@ class TestLocalbenchCore(unittest.TestCase):
         self.assertIn("--kv-cache-dtype fp8", cmd)
         self.assertIn("--gpu-memory-utilization 0.9", cmd)
 
+    def test_llamacpp_mgr_build_args(self):
+        from localbench.llamacpp_mgr import build_llama_server_args
+        model_cfg = {
+            "name": "qwen3.5-9b",
+            "context_length": 32768,
+            "parallel": 2,
+            "gpu_kv": "q8_0",
+            "flash_attention": True,
+            "gpu_offload_layers": 99,
+        }
+        args = build_llama_server_args(model_cfg, "C:/models/test.gguf", port=8080)
+        self.assertEqual(args[0], "-m")
+        self.assertEqual(args[1], "C:/models/test.gguf")
+        self.assertIn("--port", args)
+        self.assertIn("8080", args)
+        self.assertIn("-c", args)
+        self.assertIn("32768", args)
+        self.assertIn("-np", args)
+        self.assertIn("2", args)
+        self.assertIn("-ctk", args)
+        self.assertIn("q8_0", args)
+        self.assertIn("-fa", args)
+
+    def test_llamacpp_mgr_find_model_gguf(self):
+        import tempfile
+        from localbench.llamacpp_mgr import find_model_gguf
+        with tempfile.TemporaryDirectory() as tmpdir:
+            f1 = os.path.join(tmpdir, "Qwen3.5-9B-Q4_K_M.gguf")
+            with open(f1, "w") as f:
+                f.write("mock")
+            matched = find_model_gguf("qwen/qwen3.5-9b", search_dirs=[tmpdir])
+            self.assertIsNotNone(matched)
+            self.assertEqual(os.path.abspath(f1), matched)
+
+    def test_parse_gguf_metadata(self):
+        from localbench.llamacpp_mgr import parse_gguf_metadata
+        fake_path = r"D:\models\Devstral-Small-2-24B-Instruct-2512-Q4_K_M.gguf"
+        meta = parse_gguf_metadata(fake_path)
+        self.assertEqual(meta["params"], "24B")
+        self.assertEqual(meta["quantization"], "Q4_K_M")
+        self.assertEqual(meta["architecture"], "mistral")
+        self.assertEqual(meta["display_name"], "Devstral-Small-2-24B-Instruct-2512-Q4_K_M")
+
+    def test_settings_store_model_directories(self):
+        from localbench import settings_store
+        dirs = settings_store.get_model_directories()
+        self.assertIsInstance(dirs, list)
+        self.assertTrue(len(dirs) > 0)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

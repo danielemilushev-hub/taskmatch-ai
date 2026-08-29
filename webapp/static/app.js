@@ -11,7 +11,27 @@ const state = {
   compareSortDir: "asc",
   modelCatalog: null,
   allModels: [],
+  modelFilter: "all",
 };
+
+// ---------- toast notifications ----------
+function showToast(message, type = "info", duration = 3500) {
+  const container = document.getElementById("toast-container");
+  if (!container) return;
+  const toast = document.createElement("div");
+  toast.className = `toast ${type}`;
+  let icon = "ℹ️";
+  if (type === "success") icon = "✓";
+  if (type === "error") icon = "⚠️";
+  toast.innerHTML = `<span style="font-weight:700;">${icon}</span> <span>${escapeHtml(message)}</span>`;
+  container.appendChild(toast);
+
+  setTimeout(() => {
+    toast.style.opacity = "0";
+    toast.style.transform = "translateY(10px) scale(0.95)";
+    setTimeout(() => toast.remove(), 250);
+  }, duration);
+}
 
 // ---------- theme ----------
 function applyTheme(theme) {
@@ -222,9 +242,13 @@ function formatBytesGB(bytes) {
 }
 
 function buildBadgesFromCatalog(entry) {
-  // Real fields from /api/models/catalog (lms ls --json) -- never guessed.
   const badges = [];
-  if (entry.publisher) badges.push({ text: entry.publisher, cls: "family" });
+  if (entry.file_path || entry.type === "gguf") {
+    badges.push({ text: "GGUF", cls: "format-gguf" });
+  } else if (entry.publisher && entry.publisher !== "local") {
+    badges.push({ text: "LM Studio", cls: "format-lms" });
+  }
+  if (entry.architecture) badges.push({ text: entry.architecture, cls: "family" });
   if (entry.params) badges.push({ text: entry.params, cls: "size" });
   if (entry.quantization) badges.push({ text: entry.quantization, cls: "quant" });
   const sizeStr = formatBytesGB(entry.size_bytes);
@@ -242,6 +266,9 @@ function buildBadgesFromNameGuess(modelName) {
   // a lower-confidence source than real catalog data.
   const meta = parseModelMetadata(modelName);
   const badges = [];
+  if (modelName.toLowerCase().endsWith(".gguf")) {
+    badges.push({ text: "GGUF", cls: "format-gguf" });
+  }
   if (meta.family) badges.push({ text: meta.family, cls: "family" });
   if (meta.size) badges.push({ text: meta.size, cls: "size" });
   meta.tags.forEach((tag) => badges.push({ text: tag, cls: "quant" }));
@@ -252,8 +279,9 @@ function buildBadgesFromNameGuess(modelName) {
 function getModelSettings(modelName) {
   state.modelSettings = state.modelSettings || {};
   if (!state.modelSettings[modelName]) {
+    const isGguf = modelName.toLowerCase().endsWith(".gguf") || (state.modelCatalog && state.modelCatalog[modelName] && state.modelCatalog[modelName].format === "gguf");
     state.modelSettings[modelName] = {
-      runtime_flavor: "lmstudio",
+      runtime_flavor: isGguf ? "llamacpp" : "lmstudio",
       context_length: null,
       parallel: 1,
       gpu_kv: "f16",
@@ -323,9 +351,50 @@ function updateCustomBadge(badgeEl, s) {
 function renderModelGrid(container, models, selectedSet, searchQuery = "") {
   state.allModels = models;
   container.innerHTML = "";
-  const query = searchQuery.trim().toLowerCase();
-  const filtered = models.filter((m) => !query || m.toLowerCase().includes(query));
   const catalog = state.modelCatalog || {};
+  const query = searchQuery.trim().toLowerCase();
+  const filter = state.modelFilter || "all";
+
+  // Calculate counts for filter pills
+  let countAll = models.length;
+  let countGpu1 = 0;
+  let countDual = 0;
+  let countGguf = 0;
+
+  models.forEach((m) => {
+    const entry = catalog[m];
+    let sizeGB = entry && entry.size_bytes ? entry.size_bytes / (1024 ** 3) : null;
+    if (sizeGB == null) {
+      const match = m.match(/(\d+(?:\.\d+)?)\s*[bB]\b/);
+      if (match) sizeGB = parseFloat(match[1]) * 0.7;
+    }
+    if (sizeGB != null && sizeGB <= 15.98) countGpu1++;
+    if (sizeGB != null && sizeGB > 15.98 && sizeGB <= 23.96) countDual++;
+    if (m.toLowerCase().endsWith(".gguf") || (entry && (entry.file_path || entry.type === "gguf" || entry.format === "gguf"))) countGguf++;
+  });
+
+  const pAll = document.getElementById("pill-count-all");
+  const pGpu1 = document.getElementById("pill-count-gpu1");
+  const pDual = document.getElementById("pill-count-dual");
+  const pGguf = document.getElementById("pill-count-gguf");
+  if (pAll) pAll.textContent = countAll;
+  if (pGpu1) pGpu1.textContent = countGpu1;
+  if (pDual) pDual.textContent = countDual;
+  if (pGguf) pGguf.textContent = countGguf;
+
+  const filtered = models.filter((m) => {
+    if (query && !m.toLowerCase().includes(query)) return false;
+    const entry = catalog[m];
+    let sizeGB = entry && entry.size_bytes ? entry.size_bytes / (1024 ** 3) : null;
+    if (sizeGB == null) {
+      const match = m.match(/(\d+(?:\.\d+)?)\s*[bB]\b/);
+      if (match) sizeGB = parseFloat(match[1]) * 0.7;
+    }
+    if (filter === "gpu1" && (sizeGB == null || sizeGB > 15.98)) return false;
+    if (filter === "dual" && (sizeGB == null || sizeGB <= 15.98 || sizeGB > 23.96)) return false;
+    if (filter === "gguf" && !m.toLowerCase().endsWith(".gguf") && !(entry && (entry.file_path || entry.type === "gguf" || entry.format === "gguf"))) return false;
+    return true;
+  });
 
   filtered.forEach((modelName) => {
     const isChecked = selectedSet.has(modelName);
@@ -616,9 +685,54 @@ function renderModelGrid(container, models, selectedSet, searchQuery = "") {
     row3.appendChild(chipsDiv);
     drawer.appendChild(row3);
 
-    // 4. Command Preview Box
+    // 4. Command Preview Box & Terminal Launch Action
+    const cmdContainer = document.createElement("div");
+    cmdContainer.style = "display: flex; flex-direction: column; gap: 6px;";
+
     const cmdBox = document.createElement("div");
     cmdBox.className = "model-cmd-preview";
+
+    const cmdActionBar = document.createElement("div");
+    cmdActionBar.style = "display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap;";
+
+    const launchBtn = document.createElement("button");
+    launchBtn.type = "button";
+    launchBtn.className = "secondary small";
+    launchBtn.style = "font-size: 11px; font-weight: 600; padding: 4px 10px;";
+    launchBtn.innerHTML = "🖥️ Launch in Terminal";
+    launchBtn.title = "Spawns a separate interactive command prompt running llama-server on port 8080 with these settings";
+
+    const launchStatus = document.createElement("span");
+    launchStatus.style = "font-size: 11px; color: var(--text-muted);";
+
+    launchBtn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      launchBtn.disabled = true;
+      launchStatus.textContent = "Launching terminal...";
+      try {
+        const payload = {
+          name: modelName,
+          ...settings,
+          port: 8080,
+          in_terminal: true,
+        };
+        const res = await api("/api/llamacpp/launch", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        launchStatus.innerHTML = '<span style="color:var(--good); font-weight:600;">✓ Terminal opened on :8080</span>';
+      } catch (err) {
+        launchStatus.innerHTML = `<span style="color:var(--critical); font-size:10.5px;">${apiErrorDetail(err)}</span>`;
+      } finally {
+        launchBtn.disabled = false;
+      }
+    });
+
+    cmdActionBar.appendChild(launchBtn);
+    cmdActionBar.appendChild(launchStatus);
+    cmdContainer.appendChild(cmdBox);
+    cmdContainer.appendChild(cmdActionBar);
 
     function updatePreview() {
       settings.runtime_flavor = flavorSelect.value;
@@ -628,6 +742,7 @@ function renderModelGrid(container, models, selectedSet, searchQuery = "") {
       settings.gpu_kv = kvSelect.value;
       cmdBox.textContent = generatePreviewCmd(modelName, settings);
       updateCustomBadge(customBadge, settings);
+      launchBtn.style.display = flavorSelect.value === "llamacpp" ? "inline-flex" : "none";
     }
 
     presetsRow.querySelectorAll(".model-preset-btn").forEach((btn) => {
@@ -669,7 +784,7 @@ function renderModelGrid(container, models, selectedSet, searchQuery = "") {
     kvSelect.addEventListener("change", updatePreview);
 
     updatePreview();
-    drawer.appendChild(cmdBox);
+    drawer.appendChild(cmdContainer);
 
     card.appendChild(drawer);
     container.appendChild(card);
@@ -1279,6 +1394,19 @@ if (modelSearchInput) {
   });
 }
 
+// Attach Filter Pills Click Handlers
+document.querySelectorAll("#model-filter-pills .filter-pill").forEach((pill) => {
+  pill.addEventListener("click", () => {
+    document.querySelectorAll("#model-filter-pills .filter-pill").forEach((p) => p.classList.remove("active"));
+    pill.classList.add("active");
+    state.modelFilter = pill.dataset.filter || "all";
+    if (state.allModels) {
+      const query = (document.getElementById("model-search")?.value || "").trim().toLowerCase();
+      renderModelGrid(document.getElementById("model-checklist"), state.allModels, state.selectedModels, query);
+    }
+  });
+});
+
 const selectAllBtn = document.getElementById("model-select-all");
 if (selectAllBtn) {
   selectAllBtn.addEventListener("click", () => {
@@ -1302,14 +1430,20 @@ if (deselectAllBtn) {
 }
 
 document.getElementById("detect-models").addEventListener("click", async () => {
+  const btn = document.getElementById("detect-models");
   const status = document.getElementById("detect-status");
-  status.textContent = "detecting...";
+  btn.disabled = true;
+  status.textContent = "Scanning runtime & drives...";
   try {
     const [data] = await Promise.all([api("/api/models/detect"), loadModelCatalog()]);
     renderModelGrid(document.getElementById("model-checklist"), data.models, state.selectedModels);
-    status.textContent = `found ${data.models.length} model(s) on the runtime`;
+    status.textContent = `Found ${data.models.length} model(s)`;
+    showToast(`✓ Discovered ${data.models.length} live & local models`, "success");
   } catch (e) {
-    status.textContent = "detection failed: " + e.message;
+    status.textContent = "Detection failed: " + e.message;
+    showToast(`Failed to detect models: ${apiErrorDetail(e)}`, "error");
+  } finally {
+    btn.disabled = false;
   }
 });
 
@@ -4096,7 +4230,105 @@ async function loadSettings() {
   await loadJudgeModelOptions(judgeProvider, "settings-judge-model", "settings-judge-model-status");
 
   renderKeysList(data.keys);
+  await loadModelDirectories();
 }
+
+async function loadModelDirectories() {
+  const container = document.getElementById("settings-directories-list");
+  if (!container) return;
+  container.innerHTML = '<span class="muted" style="font-size:12px;">Loading directories...</span>';
+  try {
+    const res = await api("/api/settings/directories");
+    container.innerHTML = "";
+    if (!res.directories || res.directories.length === 0) {
+      container.innerHTML = '<span class="muted" style="font-size:12px;">No custom model directories configured.</span>';
+      return;
+    }
+    res.directories.forEach((dir) => {
+      const row = document.createElement("div");
+      row.className = "key-row";
+      row.style = "justify-content: space-between; padding: 6px 10px;";
+
+      const left = document.createElement("div");
+      left.style = "display: flex; align-items: center; gap: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;";
+      left.innerHTML = `
+        <span style="font-size: 13px;">📁</span>
+        <span style="font-size: 12px; font-family: var(--mono); color: var(--text);" title="${escapeHtml(dir.path)}">${escapeHtml(dir.path)}</span>
+      `;
+
+      const right = document.createElement("div");
+      right.style = "display: flex; align-items: center; gap: 8px; flex-shrink: 0;";
+
+      const countBadge = document.createElement("span");
+      countBadge.className = "model-badge " + (dir.gguf_count > 0 ? "size" : "quant");
+      countBadge.textContent = `${dir.gguf_count} GGUF${dir.gguf_count === 1 ? "" : "s"}`;
+      right.appendChild(countBadge);
+
+      const delBtn = document.createElement("button");
+      delBtn.className = "secondary small";
+      delBtn.style = "padding: 2px 6px; font-size: 11px; color: var(--text-muted); cursor: pointer;";
+      delBtn.innerHTML = "&times;";
+      delBtn.title = "Remove this folder";
+      delBtn.addEventListener("click", async () => {
+        try {
+          await api("/api/settings/directories", {
+            method: "DELETE",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ path: dir.path }),
+          });
+          loadModelDirectories();
+        } catch (e) {
+          alert(`Failed to remove folder: ${apiErrorDetail(e)}`);
+        }
+      });
+      right.appendChild(delBtn);
+
+      row.appendChild(left);
+      row.appendChild(right);
+      container.appendChild(row);
+    });
+  } catch (e) {
+    container.innerHTML = `<span class="muted" style="font-size:12px; color:var(--critical);">Failed to load folders: ${apiErrorDetail(e)}</span>`;
+  }
+}
+
+document.getElementById("settings-dir-add")?.addEventListener("click", async () => {
+  const input = document.getElementById("settings-dir-input");
+  const statusEl = document.getElementById("settings-dir-status");
+  const path = input.value.trim();
+  if (!path) return;
+  statusEl.textContent = "Adding folder...";
+  try {
+    await api("/api/settings/directories", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path }),
+    });
+    input.value = "";
+    statusEl.innerHTML = '<span style="color:var(--good);">✓ Folder added</span>';
+    await loadModelDirectories();
+    setTimeout(() => { statusEl.textContent = ""; }, 3000);
+  } catch (e) {
+    statusEl.innerHTML = `<span style="color:var(--critical);">${apiErrorDetail(e)}</span>`;
+  }
+});
+
+document.getElementById("settings-scan-drives")?.addEventListener("click", async () => {
+  const btn = document.getElementById("settings-scan-drives");
+  const statusEl = document.getElementById("settings-dir-status");
+  btn.disabled = true;
+  statusEl.textContent = "Scanning C:\\ and D:\\ drives for model folders...";
+  try {
+    const res = await api("/api/settings/directories/scan", { method: "POST" });
+    statusEl.innerHTML = `<span style="color:var(--good);">✓ Scanned drives: discovered ${(res.discovered || []).length} folders</span>`;
+    await loadModelDirectories();
+    setTimeout(() => { statusEl.textContent = ""; }, 4000);
+  } catch (e) {
+    statusEl.innerHTML = `<span style="color:var(--critical);">${apiErrorDetail(e)}</span>`;
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 document.getElementById("settings-judge-provider")?.addEventListener("change", async (e) => {
   const provider = e.target.value;

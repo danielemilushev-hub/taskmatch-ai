@@ -291,3 +291,59 @@ def get_openrouter_pricing(model: str) -> dict | None:
         return None
     except (requests.exceptions.RequestException, ValueError, KeyError, TypeError):
         return None
+
+
+def get_model_directories() -> list[str]:
+    """Retrieve list of user-configured model search directories from config.yaml."""
+    import os
+    data = _load()
+    dirs = data.get("model_directories") or []
+    if not isinstance(dirs, list):
+        dirs = []
+    
+    # Always include standard host model folders as defaults
+    defaults = [
+        os.path.abspath(os.path.expanduser("~/.lmstudio/models")),
+        os.path.abspath(os.path.expanduser("~/.cache/lm-studio/models")),
+        os.path.abspath(os.path.expanduser("~/.cache/huggingface/hub")),
+        os.path.abspath(r"C:\Games\llama.cpp"),
+        os.path.abspath(r"C:\Games\llama.cpp-new"),
+        os.path.abspath(r"D:\models"),
+        os.path.abspath(r"C:\models"),
+    ]
+    seen = set()
+    result = []
+    for d in list(dirs) + defaults:
+        if not d:
+            continue
+        norm = os.path.normpath(d)
+        if norm.lower() not in seen:
+            seen.add(norm.lower())
+            result.append(norm)
+    return result
+
+
+def add_model_directory(path: str) -> list[str]:
+    """Add a directory to the model search list in config.yaml."""
+    import os
+    norm = os.path.normpath(path.strip())
+    if not os.path.isdir(norm):
+        raise ValueError(f"Directory does not exist: {norm}")
+    data = _load()
+    dirs = data.setdefault("model_directories", [])
+    if norm not in dirs and norm.lower() not in [d.lower() for d in dirs]:
+        dirs.append(norm)
+        _save(data)
+    return get_model_directories()
+
+
+def remove_model_directory(path: str) -> list[str]:
+    """Remove a directory from the model search list in config.yaml."""
+    import os
+    norm = os.path.normpath(path.strip()).lower()
+    data = _load()
+    dirs = data.get("model_directories", [])
+    data["model_directories"] = [d for d in dirs if os.path.normpath(d).lower() != norm]
+    _save(data)
+    return get_model_directories()
+
