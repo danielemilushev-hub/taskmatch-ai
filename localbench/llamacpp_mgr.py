@@ -343,12 +343,11 @@ def launch_llama_server(
     bin_dir = os.path.dirname(binary)
 
     if in_terminal and os.name == "nt":
-        # Launch visible interactive Windows Terminal / Command Prompt window with /k so it stays open
+        # Launch visible interactive Windows Command Prompt window with /k so it stays open
         title = f"llama.cpp Server [{os.path.basename(norm_gguf)}] on :{port}"
-        formatted_args = " ".join(f'"{a}"' if " " in str(a) else str(a) for a in args)
-        launch_cmd = f'start "{title}" /D "{bin_dir}" cmd.exe /k "\"{binary}\" {formatted_args}"'
+        launch_cmd = ["cmd.exe", "/c", "start", title, "/D", bin_dir, "cmd.exe", "/k", binary] + args
         try:
-            _MANAGED_PROCESS = subprocess.Popen(launch_cmd, shell=True, cwd=bin_dir)
+            _MANAGED_PROCESS = subprocess.Popen(launch_cmd, cwd=bin_dir)
             return True, f"Launched llama-server in terminal for '{os.path.basename(norm_gguf)}' on port {port}"
         except Exception as e:
             return False, f"Failed to open terminal for llama-server: {e}"

@@ -132,15 +132,21 @@ def detect_models() -> dict:
 
     seen = set()
     combined = []
-    for mid in runtime_ids:
-        if mid and mid.lower() not in seen:
-            seen.add(mid.lower())
-            combined.append(mid)
+    # 1. Add all verified local GGUF models
     for key, meta in local_ggufs.items():
         name = meta.get("display_name") or key
         if name and name.lower() not in seen:
             seen.add(name.lower())
             combined.append(name)
+
+    # 2. Add runtime IDs (normalized)
+    for mid in runtime_ids:
+        if not mid:
+            continue
+        clean_name = os.path.splitext(os.path.basename(mid))[0] if mid.lower().endswith(".gguf") else mid
+        if clean_name.lower() not in seen:
+            seen.add(clean_name.lower())
+            combined.append(clean_name)
 
     if not combined:
         raise HTTPException(status_code=502, detail=f"No models detected on runtime ({base_url}) or local model folders.")
@@ -651,6 +657,91 @@ def run_custom(payload: dict) -> dict:
                 result["schema_error"] = f"{list(e.absolute_path)}: {e.message}"
 
     return result
+
+
+@app.get("/api/models/active")
+def get_active_model() -> dict:
+    """Check what model is currently loaded in llama.cpp (:8080) or LM Studio (:1234)."""
+    # 1. Check llama.cpp on port 8080
+    try:
+        r = requests.get("http://localhost:8080/v1/models", timeout=0.8)
+        if r.status_code == 200:
+            data = r.json().get("data", [])
+            if data:
+                m_id = data[0].get("id") or data[0].get("name")
+                return {"active": True, "model": m_id, "runtime": "llamacpp", "port": 8080}
+    except Exception:
+        pass
+
+    # 2. Check LM Studio on port 1234
+    try:
+        r = requests.get("http://localhost:1234/v1/models", timeout=0.8)
+        if r.status_code == 200:
+            data = r.json().get("data", [])
+            if data:
+                m_id = data[0].get("id") or data[0].get("name")
+                return {"active": True, "model": m_id, "runtime": "lmstudio", "port": 1234}
+    except Exception:
+        pass
+
+    return {"active": False, "model": None, "runtime": None, "port": None}
+
+
+@app.post("/api/models/load")
+def load_model_endpoint(payload: dict) -> dict:
+    """Load a model into the specified runtime engine."""
+    from localbench import llamacpp_mgr
+    flavor = payload.get("runtime_flavor") or "llamacpp"
+    name = payload.get("name") or "model"
+    in_terminal = bool(payload.get("in_terminal", False))
+
+    if flavor == "llamacpp":
+        ok, msg = llamacpp_mgr.launch_llama_server(payload, in_terminal=in_terminal, port=payload.get("port", 8080))
+        if not ok:
+            raise HTTPException(400, msg)
+        return {"ok": True, "message": msg, "model": name, "runtime": "llamacpp"}
+    elif flavor == "lmstudio":
+        lms_path = shutil.which("lms")
+        if not lms_path:
+            raise HTTPException(400, "LM Studio CLI ('lms') not found on system PATH")
+        cmd = f'lms load "{name}" -y --gpu {payload.get("gpu_offload", "max")}'
+        proc = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        if proc.returncode != 0:
+            raise HTTPException(400, f"LM Studio load failed: {proc.stderr or proc.stdout}")
+        return {"ok": True, "message": f"Loaded '{name}' in LM Studio", "model": name, "runtime": "lmstudio"}
+    else:
+        raise HTTPException(400, f"Unsupported runtime flavor: {flavor}")
+
+
+@app.post("/api/models/unload")
+def unload_model_endpoint(payload: dict | None = None) -> dict:
+    """Unload a specific model or stop its server to free VRAM."""
+    from localbench import llamacpp_mgr
+    payload = payload or {}
+    flavor = payload.get("runtime_flavor") or "llamacpp"
+    name = payload.get("name")
+
+    if flavor == "llamacpp" or not flavor:
+        llamacpp_mgr.stop_llama_server(port=payload.get("port", 8080))
+    if flavor == "lmstudio" and name:
+        lms_path = shutil.which("lms")
+        if lms_path:
+            subprocess.run(f'lms unload "{name}"', shell=True, capture_output=True)
+    return {"ok": True, "message": "Model unloaded and VRAM freed"}
+
+
+@app.post("/api/models/unload_all")
+def unload_all_endpoint() -> dict:
+    """Unload all models across all runtimes (llama.cpp + LM Studio) and reclaim 100% VRAM."""
+    from localbench import llamacpp_mgr
+    llamacpp_mgr.stop_llama_server()
+    lms_path = shutil.which("lms")
+    if lms_path:
+        try:
+            subprocess.run("lms unload --all", shell=True, capture_output=True)
+        except Exception:
+            pass
+    return {"ok": True, "message": "All models unloaded — VRAM is 100% free"}
 
 
 @app.post("/api/llamacpp/launch")

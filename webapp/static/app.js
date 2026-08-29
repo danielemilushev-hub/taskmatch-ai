@@ -407,29 +407,14 @@ function renderModelGrid(container, models, selectedSet, searchQuery = "") {
 
     const card = document.createElement("div");
     card.className = "model-card" + (isChecked ? " checked" : "");
+    card.style = "cursor: pointer; transition: transform 0.15s ease, border-color 0.15s ease;";
 
     // --- Card Header ---
     const header = document.createElement("div");
     header.className = "model-card-header";
 
-    const cb = document.createElement("input");
-    cb.type = "checkbox";
-    cb.checked = isChecked;
-    cb.addEventListener("change", () => {
-      if (cb.checked) selectedSet.add(modelName);
-      else selectedSet.delete(modelName);
-      card.classList.toggle("checked", cb.checked);
-      updateModelSelectCount(models, selectedSet);
-    });
-    header.appendChild(cb);
-
     const info = document.createElement("div");
     info.className = "model-card-info";
-    info.addEventListener("click", (e) => {
-      if (e.target.closest("button") || e.target.closest("select") || e.target.closest("input")) return;
-      cb.checked = !cb.checked;
-      cb.dispatchEvent(new Event("change"));
-    });
 
     const nameEl = document.createElement("div");
     nameEl.className = "model-card-name";
@@ -449,14 +434,6 @@ function renderModelGrid(container, models, selectedSet, searchQuery = "") {
     customBadge.className = "model-card-custom-badge";
     updateCustomBadge(customBadge, settings);
     badges.appendChild(customBadge);
-
-    if (!catalogEntry) {
-      const b = document.createElement("span");
-      b.className = "model-badge warn";
-      b.title = "No catalog data from the runtime -- badges above are guessed from the name only";
-      b.textContent = "unverified";
-      badges.appendChild(b);
-    }
 
     info.appendChild(badges);
 
@@ -507,312 +484,20 @@ function renderModelGrid(container, models, selectedSet, searchQuery = "") {
 
     header.appendChild(info);
 
-    const settingsBtn = document.createElement("button");
-    settingsBtn.type = "button";
-    settingsBtn.className = "model-card-settings-btn";
-    settingsBtn.innerHTML = "⚙️";
-    settingsBtn.title = "Configure runtime flags, context length, KV quantization & tweaks";
-    header.appendChild(settingsBtn);
+    const cfgBtn = document.createElement("button");
+    cfgBtn.type = "button";
+    cfgBtn.className = "secondary small";
+    cfgBtn.style = "font-size: 11.5px; font-weight: 600; padding: 6px 12px; margin-left: 8px; flex-shrink: 0; display: flex; align-items: center; gap: 4px;";
+    cfgBtn.innerHTML = "⚙️ Configure & Run";
+    header.appendChild(cfgBtn);
 
     card.appendChild(header);
 
-    // --- Settings Drawer ---
-    const drawer = document.createElement("div");
-    drawer.className = "model-card-drawer";
-
-    settingsBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      drawer.classList.toggle("open");
-      settingsBtn.classList.toggle("active", drawer.classList.contains("open"));
+    // Clicking anywhere on card opens the dedicated configuration modal
+    card.addEventListener("click", () => {
+      openModelConfigModal(modelName);
     });
 
-    // 0. Quick Presets Row
-    const presetsRow = document.createElement("div");
-    presetsRow.className = "model-preset-row";
-    presetsRow.innerHTML = `
-      <span style="font-size:11px; font-weight:600; color:var(--text-muted); align-self:center;">Presets:</span>
-      <button type="button" class="model-preset-btn" data-preset="speed">⚡ Max Speed</button>
-      <button type="button" class="model-preset-btn" data-preset="64k">🧠 64k Ctx</button>
-      <button type="button" class="model-preset-btn" data-preset="balanced">🎯 Balanced</button>
-    `;
-    drawer.appendChild(presetsRow);
-
-    // 1. Runtime & GPU Row
-    const row1 = document.createElement("div");
-    row1.className = "model-settings-row";
-
-    const flavorCol = document.createElement("div");
-    flavorCol.className = "model-settings-col";
-    flavorCol.innerHTML = "<label>Runtime Engine</label>";
-    const flavorSelect = document.createElement("select");
-    [
-      { value: "lmstudio", label: "LM Studio (lms)" },
-      { value: "llamacpp", label: "llama.cpp (server)" },
-      { value: "vllm", label: "vLLM (serve)" },
-      { value: "ollama", label: "Ollama (API)" },
-      { value: "custom", label: "Custom / Manual" },
-    ].forEach((opt) => {
-      const optEl = document.createElement("option");
-      optEl.value = opt.value;
-      optEl.textContent = opt.label;
-      if (settings.runtime_flavor === opt.value) optEl.selected = true;
-      flavorSelect.appendChild(optEl);
-    });
-    flavorCol.appendChild(flavorSelect);
-    row1.appendChild(flavorCol);
-
-    const gpuCol = document.createElement("div");
-    gpuCol.className = "model-settings-col";
-    gpuCol.innerHTML = "<label>GPU / VRAM Offload</label>";
-    const gpuSelect = document.createElement("select");
-    [
-      { value: "max", label: "Max (100% VRAM)" },
-      { value: "0.75", label: "75% Offload" },
-      { value: "0.5", label: "50% Offload" },
-      { value: "off", label: "CPU Only (0%)" },
-    ].forEach((opt) => {
-      const optEl = document.createElement("option");
-      optEl.value = opt.value;
-      optEl.textContent = opt.label;
-      if (String(settings.gpu_offload) === opt.value) optEl.selected = true;
-      gpuSelect.appendChild(optEl);
-    });
-    gpuCol.appendChild(gpuSelect);
-    row1.appendChild(gpuCol);
-
-    const parCol = document.createElement("div");
-    parCol.className = "model-settings-col";
-    parCol.innerHTML = "<label>Parallel Slots (Concurrency)</label>";
-    const parSelect = document.createElement("select");
-    [
-      { value: "1", label: "1 (Single / Max VRAM)" },
-      { value: "2", label: "2 (Dual slots)" },
-      { value: "4", label: "4 (Quad slots)" },
-    ].forEach((opt) => {
-      const optEl = document.createElement("option");
-      optEl.value = opt.value;
-      optEl.textContent = opt.label;
-      if (String(settings.parallel || 1) === opt.value) optEl.selected = true;
-      parSelect.appendChild(optEl);
-    });
-    parCol.appendChild(parSelect);
-    row1.appendChild(parCol);
-    drawer.appendChild(row1);
-
-    // 2. Context & KV Cache Row
-    const row2 = document.createElement("div");
-    row2.className = "model-settings-row";
-
-    const ctxCol = document.createElement("div");
-    ctxCol.className = "model-settings-col";
-    ctxCol.innerHTML = "<label>Context Window</label>";
-    const ctxSelect = document.createElement("select");
-    [
-      { value: "", label: "Default (Model Max)" },
-      { value: "2048", label: "2,048 (2k)" },
-      { value: "4096", label: "4,096 (4k)" },
-      { value: "8192", label: "8,192 (8k)" },
-      { value: "16384", label: "16,384 (16k)" },
-      { value: "32768", label: "32,768 (32k)" },
-      { value: "65536", label: "65,536 (64k)" },
-      { value: "131072", label: "131,072 (128k)" },
-    ].forEach((opt) => {
-      const optEl = document.createElement("option");
-      optEl.value = opt.value;
-      optEl.textContent = opt.label;
-      if (String(settings.context_length || "") === opt.value) optEl.selected = true;
-      ctxSelect.appendChild(optEl);
-    });
-    ctxCol.appendChild(ctxSelect);
-    row2.appendChild(ctxCol);
-
-    const kvCol = document.createElement("div");
-    kvCol.className = "model-settings-col";
-    kvCol.innerHTML = "<label>KV Cache Quantization</label>";
-    const kvSelect = document.createElement("select");
-    [
-      { value: "f16", label: "FP16 (Uncompressed)" },
-      { value: "q8_0", label: "Q8_0 (8-bit — ~50% VRAM)" },
-      { value: "q4_0", label: "Q4_0 (4-bit — ~75% VRAM)" },
-    ].forEach((opt) => {
-      const optEl = document.createElement("option");
-      optEl.value = opt.value;
-      optEl.textContent = opt.label;
-      if (settings.gpu_kv === opt.value) optEl.selected = true;
-      kvSelect.appendChild(optEl);
-    });
-    kvCol.appendChild(kvSelect);
-    row2.appendChild(kvCol);
-
-    const batchCol = document.createElement("div");
-    batchCol.className = "model-settings-col";
-    batchCol.innerHTML = "<label>Prompt Batch Size (-b)</label>";
-    const batchSelect = document.createElement("select");
-    [
-      { value: "512", label: "512 (Safe / Low RAM)" },
-      { value: "1024", label: "1,024 (Balanced)" },
-      { value: "2048", label: "2,048 (High Perf GPU)" },
-      { value: "4096", label: "4,096 (Max Saturation)" },
-    ].forEach((opt) => {
-      const optEl = document.createElement("option");
-      optEl.value = opt.value;
-      optEl.textContent = opt.label;
-      if (String(settings.batch_size || 2048) === opt.value) optEl.selected = true;
-      batchSelect.appendChild(optEl);
-    });
-    batchSelect.addEventListener("change", (e) => {
-      settings.batch_size = parseInt(e.target.value, 10);
-      updatePreview();
-    });
-    batchCol.appendChild(batchSelect);
-    row2.appendChild(batchCol);
-    drawer.appendChild(row2);
-
-    // 3. Engine Flags Row (Flash Attention, mmap, mlock)
-    const row3 = document.createElement("div");
-    row3.className = "model-drawer-section";
-    row3.innerHTML = '<div class="model-drawer-section-title">Engine & Memory Tweaks</div>';
-    const chipsDiv = document.createElement("div");
-    chipsDiv.className = "model-settings-chips";
-
-    const faChip = document.createElement("div");
-    faChip.className = "model-toggle-chip" + (settings.flash_attention ? " active" : "");
-    faChip.textContent = "⚡ Flash Attention";
-    faChip.title = "Uses Flash Attention tensor cores (auto-recommended with KV quant)";
-    faChip.addEventListener("click", () => {
-      settings.flash_attention = !settings.flash_attention;
-      faChip.classList.toggle("active", settings.flash_attention);
-      updatePreview();
-    });
-    chipsDiv.appendChild(faChip);
-
-    const mmapChip = document.createElement("div");
-    mmapChip.className = "model-toggle-chip" + (settings.mmap !== false ? " active" : "");
-    mmapChip.textContent = "📁 mmap (Fast load)";
-    mmapChip.title = "Memory map weights into page cache for fast model loading";
-    mmapChip.addEventListener("click", () => {
-      settings.mmap = !settings.mmap;
-      mmapChip.classList.toggle("active", settings.mmap !== false);
-      updatePreview();
-    });
-    chipsDiv.appendChild(mmapChip);
-
-    const mlockChip = document.createElement("div");
-    mlockChip.className = "model-toggle-chip" + (settings.mlock ? " active" : "");
-    mlockChip.textContent = "🔒 mlock (Lock RAM)";
-    mlockChip.title = "Lock model in physical RAM to prevent OS paging";
-    mlockChip.addEventListener("click", () => {
-      settings.mlock = !settings.mlock;
-      mlockChip.classList.toggle("active", settings.mlock);
-      updatePreview();
-    });
-    chipsDiv.appendChild(mlockChip);
-
-    row3.appendChild(chipsDiv);
-    drawer.appendChild(row3);
-
-    // 4. Command Preview Box & Terminal Launch Action
-    const cmdContainer = document.createElement("div");
-    cmdContainer.style = "display: flex; flex-direction: column; gap: 6px;";
-
-    const cmdBox = document.createElement("div");
-    cmdBox.className = "model-cmd-preview";
-
-    const cmdActionBar = document.createElement("div");
-    cmdActionBar.style = "display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap;";
-
-    const launchBtn = document.createElement("button");
-    launchBtn.type = "button";
-    launchBtn.className = "secondary small";
-    launchBtn.style = "font-size: 11px; font-weight: 600; padding: 4px 10px;";
-    launchBtn.innerHTML = "🖥️ Launch in Terminal";
-    launchBtn.title = "Spawns a separate interactive command prompt running llama-server on port 8080 with these settings";
-
-    const launchStatus = document.createElement("span");
-    launchStatus.style = "font-size: 11px; color: var(--text-muted);";
-
-    launchBtn.addEventListener("click", async (e) => {
-      e.stopPropagation();
-      launchBtn.disabled = true;
-      launchStatus.textContent = "Launching terminal...";
-      try {
-        const payload = {
-          name: modelName,
-          ...settings,
-          port: 8080,
-          in_terminal: true,
-        };
-        const res = await api("/api/llamacpp/launch", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-        launchStatus.innerHTML = '<span style="color:var(--good); font-weight:600;">✓ Terminal opened on :8080</span>';
-      } catch (err) {
-        launchStatus.innerHTML = `<span style="color:var(--critical); font-size:10.5px;">${apiErrorDetail(err)}</span>`;
-      } finally {
-        launchBtn.disabled = false;
-      }
-    });
-
-    cmdActionBar.appendChild(launchBtn);
-    cmdActionBar.appendChild(launchStatus);
-    cmdContainer.appendChild(cmdBox);
-    cmdContainer.appendChild(cmdActionBar);
-
-    function updatePreview() {
-      settings.runtime_flavor = flavorSelect.value;
-      settings.gpu_offload = gpuSelect.value;
-      settings.parallel = parseInt(parSelect.value, 10) || 1;
-      settings.context_length = ctxSelect.value ? parseInt(ctxSelect.value, 10) : null;
-      settings.gpu_kv = kvSelect.value;
-      cmdBox.textContent = generatePreviewCmd(modelName, settings);
-      updateCustomBadge(customBadge, settings);
-      launchBtn.style.display = flavorSelect.value === "llamacpp" ? "inline-flex" : "none";
-    }
-
-    presetsRow.querySelectorAll(".model-preset-btn").forEach((btn) => {
-      btn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        const p = btn.dataset.preset;
-        if (p === "speed") {
-          settings.gpu_offload = "max";
-          settings.parallel = 1;
-          settings.gpu_kv = "f16";
-          settings.flash_attention = true;
-          gpuSelect.value = "max";
-          parSelect.value = "1";
-          kvSelect.value = "f16";
-          faChip.classList.add("active");
-        } else if (p === "64k") {
-          settings.context_length = 65536;
-          settings.parallel = 1;
-          settings.flash_attention = true;
-          ctxSelect.value = "65536";
-          parSelect.value = "1";
-          faChip.classList.add("active");
-        } else if (p === "balanced") {
-          settings.context_length = 8192;
-          settings.gpu_offload = "max";
-          settings.parallel = 1;
-          ctxSelect.value = "8192";
-          gpuSelect.value = "max";
-          parSelect.value = "1";
-        }
-        updatePreview();
-      });
-    });
-
-    flavorSelect.addEventListener("change", updatePreview);
-    gpuSelect.addEventListener("change", updatePreview);
-    parSelect.addEventListener("change", updatePreview);
-    ctxSelect.addEventListener("change", updatePreview);
-    kvSelect.addEventListener("change", updatePreview);
-
-    updatePreview();
-    drawer.appendChild(cmdContainer);
-
-    card.appendChild(drawer);
     container.appendChild(card);
   });
 
@@ -821,6 +506,298 @@ function renderModelGrid(container, models, selectedSet, searchQuery = "") {
   }
 
   updateModelSelectCount(models, selectedSet);
+}
+
+function openModelConfigModal(modelName) {
+  const modal = document.getElementById("model-config-modal");
+  if (!modal) return;
+
+  const catalog = state.modelCatalog || {};
+  const entry = catalog[modelName];
+  const settings = getModelSettings(modelName);
+  const badgeData = entry ? buildBadgesFromCatalog(entry) : buildBadgesFromNameGuess(modelName);
+
+  // 1. Set Title & Badges
+  const titleEl = document.getElementById("modal-model-title");
+  titleEl.textContent = (entry && entry.display_name) || modelName;
+
+  const badgesEl = document.getElementById("modal-model-badges");
+  badgesEl.innerHTML = "";
+  badgeData.forEach(({ text, cls }) => {
+    const b = document.createElement("span");
+    b.className = `model-badge ${cls}`;
+    b.textContent = text;
+    badgesEl.appendChild(b);
+  });
+  if (entry && entry.file_path) {
+    const pathBadge = document.createElement("span");
+    pathBadge.className = "model-badge";
+    pathBadge.style = "background:var(--surface); border:1px solid var(--border); color:var(--text-muted); font-size:11px; max-width:400px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;";
+    pathBadge.textContent = entry.file_path;
+    pathBadge.title = entry.file_path;
+    badgesEl.appendChild(pathBadge);
+  }
+
+  // 2. VRAM Fit Bar
+  let modelSizeGB = null;
+  if (entry && entry.size_bytes) {
+    modelSizeGB = entry.size_bytes / (1024 ** 3);
+  } else {
+    const sizeBadge = badgeData.find((b) => b.cls === "size" && b.text.includes("GB"));
+    if (sizeBadge) {
+      const match = sizeBadge.text.match(/([0-9.]+)\s*GB/i);
+      if (match) modelSizeGB = parseFloat(match[1]);
+    }
+  }
+
+  const vramFill = document.getElementById("modal-vram-bar-fill");
+  const vramFitBadge = document.getElementById("modal-vram-fit-badge");
+  const vramLabel = document.getElementById("modal-vram-label");
+  if (modelSizeGB != null && modelSizeGB > 0) {
+    const gpu1_vram = 15.98;
+    const dual_vram = 23.96;
+    let fitText = `Fits in GPU 1 (${Math.round((modelSizeGB / gpu1_vram) * 100)}%)`;
+    let fitClass = "gpu1";
+
+    if (modelSizeGB > gpu1_vram && modelSizeGB <= dual_vram) {
+      fitClass = "dual";
+      fitText = `Fits across Dual GPUs (24GB)`;
+    } else if (modelSizeGB > dual_vram) {
+      fitClass = "spill";
+      fitText = `Exceeds GPU VRAM (Spills to RAM)`;
+    }
+    const fillPct = Math.min(100, Math.round((modelSizeGB / gpu1_vram) * 100));
+    vramFill.style.width = `${fillPct}%`;
+    vramFill.className = `vram-bar-fill ${fitClass}`;
+    vramFitBadge.textContent = fitText;
+    vramFitBadge.className = `vram-fit-pill ${fitClass}`;
+    vramLabel.textContent = `Memory Footprint: ${modelSizeGB.toFixed(1)} GB`;
+  }
+
+  // 3. Dropdowns and settings elements
+  const engineSel = document.getElementById("modal-cfg-engine");
+  const gpuSel = document.getElementById("modal-cfg-gpu");
+  const ctxSel = document.getElementById("modal-cfg-ctx");
+  const kvSel = document.getElementById("modal-cfg-kv");
+  const batchSel = document.getElementById("modal-cfg-batch");
+  const parSel = document.getElementById("modal-cfg-parallel");
+  const faChip = document.getElementById("modal-chip-fa");
+  const mmapChip = document.getElementById("modal-chip-mmap");
+  const mlockChip = document.getElementById("modal-chip-mlock");
+  const cmdBox = document.getElementById("modal-cmd-preview");
+  const statusEl = document.getElementById("modal-action-status");
+
+  engineSel.value = settings.runtime_flavor || "llamacpp";
+  gpuSel.value = settings.gpu_offload || "max";
+  ctxSel.value = settings.context_length ? String(settings.context_length) : "32768";
+  kvSel.value = settings.gpu_kv || "q8_0";
+  batchSel.value = settings.batch_size ? String(settings.batch_size) : "2048";
+  parSel.value = settings.parallel ? String(settings.parallel) : "1";
+  
+  faChip.classList.toggle("active", settings.flash_attention !== false);
+  mmapChip.classList.toggle("active", settings.mmap !== false);
+  mlockChip.classList.toggle("active", !!settings.mlock);
+  statusEl.textContent = "";
+
+  function syncAndPreview() {
+    settings.runtime_flavor = engineSel.value;
+    settings.gpu_offload = gpuSel.value;
+    settings.context_length = ctxSel.value ? parseInt(ctxSel.value, 10) : null;
+    settings.gpu_kv = kvSel.value;
+    settings.batch_size = batchSel.value ? parseInt(batchSel.value, 10) : 2048;
+    settings.parallel = parseInt(parSel.value, 10) || 1;
+    settings.flash_attention = faChip.classList.contains("active");
+    settings.mmap = mmapChip.classList.contains("active");
+    settings.mlock = mlockChip.classList.contains("active");
+    cmdBox.textContent = generatePreviewCmd(modelName, settings);
+  }
+
+  // Preset Handlers
+  document.getElementById("modal-presets-bar").querySelectorAll(".preset-btn").forEach((btn) => {
+    btn.onclick = () => {
+      const p = btn.dataset.preset;
+      if (p === "speed") {
+        gpuSel.value = "max";
+        parSel.value = "1";
+        kvSel.value = "f16";
+        batchSel.value = "2048";
+        faChip.classList.add("active");
+      } else if (p === "ctx") {
+        ctxSel.value = "65536";
+        kvSel.value = "q8_0";
+        batchSel.value = "2048";
+        faChip.classList.add("active");
+      } else if (p === "balanced") {
+        ctxSel.value = "32768";
+        gpuSel.value = "max";
+        kvSel.value = "q8_0";
+        batchSel.value = "2048";
+        faChip.classList.add("active");
+      }
+      syncAndPreview();
+    };
+  });
+
+  engineSel.onchange = syncAndPreview;
+  gpuSel.onchange = syncAndPreview;
+  ctxSel.onchange = syncAndPreview;
+  kvSel.onchange = syncAndPreview;
+  batchSel.onchange = syncAndPreview;
+  parSel.onchange = syncAndPreview;
+
+  faChip.onclick = () => { faChip.classList.toggle("active"); syncAndPreview(); };
+  mmapChip.onclick = () => { mmapChip.classList.toggle("active"); syncAndPreview(); };
+  mlockChip.onclick = () => { mlockChip.classList.toggle("active"); syncAndPreview(); };
+
+  syncAndPreview();
+
+  // 4. Action Buttons
+  const loadBtn = document.getElementById("modal-btn-load");
+  const launchBtn = document.getElementById("modal-btn-launch");
+  const unloadBtn = document.getElementById("modal-btn-unload");
+  const runBtn = document.getElementById("modal-btn-run");
+
+  loadBtn.onclick = async () => {
+    loadBtn.disabled = true;
+    statusEl.textContent = "Loading model...";
+    try {
+      syncAndPreview();
+      const payload = { name: modelName, ...settings, port: 8080, in_terminal: false };
+      await api("/api/models/load", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      statusEl.innerHTML = '<span style="color:var(--good); font-weight:600;">✓ Loaded in background on :8080</span>';
+      showToast(`✓ Loaded ${modelName} on port 8080`, "success");
+    } catch (err) {
+      statusEl.innerHTML = `<span style="color:var(--critical);">${apiErrorDetail(err)}</span>`;
+      showToast(`Load failed: ${apiErrorDetail(err)}`, "error");
+    } finally {
+      loadBtn.disabled = false;
+    }
+  };
+
+  launchBtn.onclick = async () => {
+    launchBtn.disabled = true;
+    statusEl.textContent = "Launching terminal...";
+    try {
+      syncAndPreview();
+      const payload = { name: modelName, ...settings, port: 8080, in_terminal: true };
+      await api("/api/llamacpp/launch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      statusEl.innerHTML = '<span style="color:var(--good); font-weight:600;">✓ Terminal active on :8080</span>';
+      showToast(`✓ Terminal launched for ${modelName}`, "success");
+    } catch (err) {
+      statusEl.innerHTML = `<span style="color:var(--critical);">${apiErrorDetail(err)}</span>`;
+      showToast(`Launch failed: ${apiErrorDetail(err)}`, "error");
+    } finally {
+      launchBtn.disabled = false;
+    }
+  };
+
+  unloadBtn.onclick = async () => {
+    unloadBtn.disabled = true;
+    statusEl.textContent = "Unloading...";
+    try {
+      await api("/api/models/unload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: modelName, runtime_flavor: settings.runtime_flavor }),
+      });
+      statusEl.innerHTML = '<span style="color:var(--good); font-weight:600;">✓ Unloaded (VRAM 100% free)</span>';
+      showToast(`✓ Unloaded ${modelName}`, "success");
+    } catch (err) {
+      statusEl.innerHTML = `<span style="color:var(--critical);">${apiErrorDetail(err)}</span>`;
+    } finally {
+      unloadBtn.disabled = false;
+    }
+  };
+
+  runBtn.onclick = async () => {
+    syncAndPreview();
+    modal.style.display = "none";
+    
+    // Choose scope profile from modal radio
+    const profileRadio = document.querySelector('input[name="modal-run-profile"]:checked');
+    const profileVal = profileRadio ? profileRadio.value : "quick";
+    
+    // Select exclusively this model
+    state.selectedModels = new Set([modelName]);
+    
+    // Switch to active benchmark stage view!
+    switchToActiveBenchmarkStage(modelName, settings);
+    
+    // Trigger benchmark execution!
+    await executeBenchmarkRun(modelName, settings, profileVal);
+  };
+
+  // Close button & overlay click
+  document.getElementById("modal-close-btn").onclick = () => { modal.style.display = "none"; };
+  modal.onclick = (e) => {
+    if (e.target === modal) modal.style.display = "none";
+  };
+
+  modal.style.display = "flex";
+}
+
+function switchToActiveBenchmarkStage(modelName, settings) {
+  const selectionStage = document.getElementById("model-selection-stage");
+  const activeStage = document.getElementById("active-benchmark-stage");
+  if (selectionStage) selectionStage.style.display = "none";
+  if (activeStage) activeStage.style.display = "block";
+
+  const heroTitle = document.getElementById("stage-hero-model-name");
+  const heroMeta = document.getElementById("stage-hero-model-meta");
+  const engineBadge = document.getElementById("stage-engine-badge");
+
+  if (heroTitle) heroTitle.textContent = modelName;
+  if (heroMeta) {
+    heroMeta.innerHTML = `
+      <span class="model-badge" style="background:rgba(59,130,246,0.15); color:#60a5fa;">Engine: ${settings.runtime_flavor || "llama.cpp"}</span>
+      <span class="model-badge" style="background:var(--surface);">Ctx: ${settings.context_length || "32k"}</span>
+      <span class="model-badge" style="background:var(--surface);">KV: ${settings.gpu_kv || "Q8_0"}</span>
+      <span class="model-badge" style="background:var(--surface);">Dual GPU Vulkan</span>
+    `;
+  }
+  if (engineBadge) {
+    engineBadge.textContent = `${settings.runtime_flavor === "lmstudio" ? "LM Studio" : "llama.cpp"} Vulkan (Dual GPU)`;
+  }
+}
+
+function switchToModelSelectionStage() {
+  const selectionStage = document.getElementById("model-selection-stage");
+  const activeStage = document.getElementById("active-benchmark-stage");
+  if (selectionStage) selectionStage.style.display = "block";
+  if (activeStage) activeStage.style.display = "none";
+}
+
+async function executeBenchmarkRun(modelName, settings, profileVal) {
+  const logEl = document.getElementById("run-log");
+  if (logEl) logEl.textContent = "Initializing benchmark runner...\n";
+
+  try {
+    const suites = state.config?.suites ? Object.keys(state.config.suites) : ["json_schema", "coding", "logic_math", "instruction_following", "multi_turn", "tool_calling", "rag_retrieval"];
+    const { run_id } = await api("/api/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        models: [{ name: modelName, ...settings }],
+        suites: suites,
+        profile: profileVal,
+        run_frontier_graded: false,
+      }),
+    });
+    state.activeRunId = run_id;
+    localStorage.setItem("localbench-active-run", run_id);
+    pollRun();
+  } catch (e) {
+    if (logEl) logEl.textContent = "Failed to start benchmark: " + e.message;
+    showToast(`Failed to start benchmark: ${apiErrorDetail(e)}`, "error");
+  }
 }
 
 const SUITE_METADATA = {
@@ -1475,6 +1452,21 @@ document.getElementById("detect-models").addEventListener("click", async () => {
   }
 });
 
+const unloadAllBtn = document.getElementById("unload-all-models");
+if (unloadAllBtn) {
+  unloadAllBtn.addEventListener("click", async () => {
+    unloadAllBtn.disabled = true;
+    try {
+      const res = await api("/api/models/unload_all", { method: "POST" });
+      showToast(res.message || "✓ All models unloaded — GPU VRAM is 100% free", "success");
+    } catch (e) {
+      showToast(`Failed to unload: ${apiErrorDetail(e)}`, "error");
+    } finally {
+      unloadAllBtn.disabled = false;
+    }
+  });
+}
+
 document.getElementById("start-run").addEventListener("click", async () => {
   const includeFrontierEl = document.getElementById("include-frontier-graded");
   const runFrontierGraded = !!(includeFrontierEl && includeFrontierEl.checked);
@@ -1594,15 +1586,47 @@ function updateTelemetryHUD(data) {
       : "⏱️ -- TTFT";
   }
 
+  // Update stage HUD elements
+  const stageTokSec = document.getElementById("stage-tok-sec");
+  const stageTtft = document.getElementById("stage-ttft");
+  const stageFill = document.getElementById("stage-progress-fill");
+  const stagePct = document.getElementById("stage-pct-label");
+  const stageTaskCount = document.getElementById("stage-task-count");
+  const stageModelName = document.getElementById("stage-hero-model-name");
+
+  if (stageTokSec && data.live_tokens_per_sec != null) {
+    stageTokSec.textContent = `⚡ ${fmtNum(data.live_tokens_per_sec, 1)} tok/s`;
+  }
+  if (stageTtft && data.live_ttft_seconds != null) {
+    stageTtft.textContent = `⏱️ ${fmtNum(data.live_ttft_seconds, 2)}s`;
+  }
+
   const countMatch = lastLine.match(/\[(\d+)\/(\d+)\]/);
-  if (countMatch && fillEl && textEl && pctEl) {
+  if (countMatch) {
     const cur = parseInt(countMatch[1], 10);
     const tot = parseInt(countMatch[2], 10);
     const pct = Math.round((cur / tot) * 100);
-    fillEl.style.width = `${pct}%`;
-    textEl.textContent = `Task ${cur} / ${tot}`;
-    pctEl.textContent = `${pct}%`;
+    if (fillEl && textEl && pctEl) {
+      fillEl.style.width = `${pct}%`;
+      textEl.textContent = `Task ${cur} / ${tot}`;
+      pctEl.textContent = `${pct}%`;
+    }
+    if (stageFill && stagePct && stageTaskCount) {
+      stageFill.style.width = `${pct}%`;
+      stagePct.textContent = `${pct}%`;
+      stageTaskCount.textContent = `Task ${cur} of ${tot}`;
+    }
   }
+  if (modelMatch && stageModelName) {
+    stageModelName.textContent = modelMatch[1];
+  }
+}
+
+const backToModelsBtn = document.getElementById("btn-back-to-models");
+if (backToModelsBtn) {
+  backToModelsBtn.addEventListener("click", () => {
+    switchToModelSelectionStage();
+  });
 }
 
 function pollRun() {

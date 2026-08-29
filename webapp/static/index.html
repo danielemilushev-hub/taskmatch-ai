@@ -2,7 +2,11 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>TaskMatch AI — Local LLM Benchmark & Matchmaker</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TaskMatch AI — Workstation-Grade Local LLM Benchmark</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
@@ -35,145 +39,244 @@
     <button data-view="settings">⚙️ Settings & Engine</button>
   </nav>
 
-  <!-- NEW RUN -->
+  <!-- BENCHMARK SUITE -->
   <section id="view-run" class="view active">
-    <div class="card">
-      <div class="row" style="justify-content: space-between; align-items: center; margin-bottom: 12px;">
-        <h2 style="margin:0;">Models</h2>
-        <div class="row" style="gap: 8px;">
-          <input type="text" id="model-search" placeholder="Search models..." style="width: 170px; padding: 5px 9px; font-size: 12.5px;">
-          <button class="secondary small" id="model-select-all">Select All</button>
-          <button class="secondary small" id="model-deselect-all">Deselect All</button>
+    <!-- 1. MODEL SELECTION STAGE -->
+    <div id="model-selection-stage">
+      <div class="card">
+        <div class="row" style="justify-content: space-between; align-items: center; margin-bottom: 12px;">
+          <div>
+            <h2 style="margin:0;">Model Library</h2>
+            <p class="muted" style="margin:2px 0 0 0; font-size:12px;">Select a model to configure its VRAM, context window, and run benchmarks.</p>
+          </div>
+          <div class="row" style="gap: 8px;">
+            <input type="text" id="model-search" placeholder="Search models..." style="width: 190px; padding: 6px 10px; font-size: 12.5px;">
+            <button class="secondary small" id="unload-all-models" style="color: #ef4444; border-color: rgba(239, 68, 68, 0.3);" title="Unload any currently running model and free GPU VRAM">⏹️ Unload All (Free VRAM)</button>
+          </div>
         </div>
-      </div>
-      <div class="row" style="margin-bottom: 10px; align-items: center; flex-wrap: wrap; gap: 8px;">
-        <button class="secondary" id="detect-models">Detect live models</button>
-        <span class="muted" id="detect-status" style="margin-left: 4px;"></span>
-        <span class="muted" id="model-select-count" style="margin-left: auto; font-weight: 600;"></span>
-      </div>
+        <div class="row" style="margin-bottom: 12px; align-items: center; flex-wrap: wrap; gap: 8px;">
+          <button class="secondary" id="detect-models">🔄 Rescan Models</button>
+          <span class="muted" id="detect-status" style="margin-left: 4px;"></span>
+        </div>
 
-      <!-- Quick Filter Pills -->
-      <div class="filter-pills-bar" id="model-filter-pills">
-        <div class="filter-pill active" data-filter="all">All Models <span class="pill-count" id="pill-count-all">0</span></div>
-        <div class="filter-pill" data-filter="gpu1">⚡ Fits RX 7800 XT (16GB) <span class="pill-count" id="pill-count-gpu1">0</span></div>
-        <div class="filter-pill" data-filter="dual">🔥 Dual GPU (24GB) <span class="pill-count" id="pill-count-dual">0</span></div>
-        <div class="filter-pill" data-filter="gguf">📁 Local GGUFs <span class="pill-count" id="pill-count-gguf">0</span></div>
-      </div>
+        <!-- Quick Filter Pills -->
+        <div class="filter-pills-bar" id="model-filter-pills">
+          <div class="filter-pill active" data-filter="all">All Models <span class="pill-count" id="pill-count-all">0</span></div>
+          <div class="filter-pill" data-filter="gpu1">⚡ Fits RX 7800 XT (16GB) <span class="pill-count" id="pill-count-gpu1">0</span></div>
+          <div class="filter-pill" data-filter="dual">🔥 Dual GPU (24GB) <span class="pill-count" id="pill-count-dual">0</span></div>
+          <div class="filter-pill" data-filter="gguf">📁 Local GGUFs <span class="pill-count" id="pill-count-gguf">0</span></div>
+        </div>
 
-      <div class="model-grid" id="model-checklist"></div>
+        <div class="model-grid" id="model-checklist"></div>
+      </div>
     </div>
 
-    <div class="card">
-      <div class="row" style="justify-content: space-between; align-items: center; margin-bottom: 12px;">
-        <h2 style="margin:0;">Suites</h2>
-        <div class="row" style="gap: 8px;">
-          <button class="secondary small" id="suite-select-all">Select All</button>
-          <button class="secondary small" id="suite-deselect-all">Deselect All</button>
+    <!-- 2. MODEL CONFIGURATION MODAL POPUP -->
+    <div id="model-config-modal" class="modal-overlay" style="display:none;">
+      <div class="model-config-modal">
+        <div class="model-config-header">
+          <div>
+            <h2 id="modal-model-title" style="margin:0; font-size:17px; font-weight:700; color:var(--text);">Model Setup</h2>
+            <div id="modal-model-badges" class="row" style="gap:6px; margin-top:6px; flex-wrap:wrap;"></div>
+          </div>
+          <button class="secondary small" id="modal-close-btn" style="padding:4px 9px; font-size:14px;">✕</button>
         </div>
-      </div>
-      <div class="suite-grid" id="suite-checklist"></div>
-    </div>
+        
+        <div class="model-config-body">
+          <!-- VRAM Fit Bar -->
+          <div id="modal-vram-section" style="padding:12px; background:var(--page); border:1px solid var(--border); border-radius:8px;">
+            <div class="row" style="justify-content:space-between; margin-bottom:6px;">
+              <span style="font-size:12px; font-weight:600; color:var(--text);" id="modal-vram-label">Memory Footprint</span>
+              <span style="font-size:11.5px;" id="modal-vram-fit-badge" class="vram-fit-pill"></span>
+            </div>
+            <div class="vram-bar-track" style="height:7px;">
+              <div class="vram-bar-fill" id="modal-vram-bar-fill" style="width:0%;"></div>
+            </div>
+          </div>
 
-    <div class="card" id="frontier-judge-card" style="display:none;">
-      <h2>Frontier Judge <span class="muted" style="font-weight:400;">(optional, paid, non-deterministic)</span></h2>
-      <label class="field"><input type="checkbox" id="include-frontier-graded"> Include frontier-graded suite in this run</label>
-      <div class="row" style="gap:16px; margin-top:10px;">
-        <div style="flex:1;">
-          <label class="field">Judge provider</label>
-          <select id="run-judge-provider">
-            <option value="anthropic">Anthropic</option>
-            <option value="openai">OpenAI</option>
-            <option value="gemini">Gemini</option>
-            <option value="openrouter">OpenRouter</option>
-          </select>
+          <!-- Quick Presets -->
+          <div>
+            <label style="font-size:11.5px; font-weight:600; text-transform:uppercase; letter-spacing:0.5px; color:var(--text-muted); display:block; margin-bottom:6px;">Quick Workstation Presets</label>
+            <div class="row" style="gap:8px;" id="modal-presets-bar">
+              <button type="button" class="preset-btn" data-preset="speed" style="font-size:11.5px; padding:5px 10px;">⚡ Max Speed</button>
+              <button type="button" class="preset-btn" data-preset="ctx" style="font-size:11.5px; padding:5px 10px;">🧠 64k Ctx</button>
+              <button type="button" class="preset-btn" data-preset="balanced" style="font-size:11.5px; padding:5px 10px;">🎯 Balanced</button>
+            </div>
+          </div>
+
+          <!-- Settings Grid (2 Columns) -->
+          <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:12px;">
+            <div class="model-settings-col">
+              <label>Runtime Engine</label>
+              <select id="modal-cfg-engine">
+                <option value="llamacpp">llama.cpp (server) — Fast Vulkan</option>
+                <option value="lmstudio">LM Studio (local server)</option>
+                <option value="ollama">Ollama</option>
+                <option value="vllm">vLLM</option>
+              </select>
+            </div>
+            <div class="model-settings-col">
+              <label>GPU / VRAM Offload</label>
+              <select id="modal-cfg-gpu">
+                <option value="max">Max (100% VRAM Dual GPU)</option>
+                <option value="0.75">75% Offload</option>
+                <option value="0.5">50% Offload</option>
+                <option value="off">CPU Only (0%)</option>
+              </select>
+            </div>
+            <div class="model-settings-col">
+              <label>Context Window</label>
+              <select id="modal-cfg-ctx">
+                <option value="">Default (Model Max)</option>
+                <option value="2048">2,048 (2k)</option>
+                <option value="4096">4,096 (4k)</option>
+                <option value="8192">8,192 (8k)</option>
+                <option value="16384">16,384 (16k)</option>
+                <option value="32768" selected>32,768 (32k)</option>
+                <option value="65536">65,536 (64k)</option>
+                <option value="131072">131,072 (128k)</option>
+              </select>
+            </div>
+            <div class="model-settings-col">
+              <label>KV Cache Quantization</label>
+              <select id="modal-cfg-kv">
+                <option value="f16">FP16 (Uncompressed)</option>
+                <option value="q8_0" selected>Q8_0 (8-bit — ~50% VRAM)</option>
+                <option value="q4_0">Q4_0 (4-bit — ~75% VRAM)</option>
+              </select>
+            </div>
+            <div class="model-settings-col">
+              <label>Prompt Batch Size (-b)</label>
+              <select id="modal-cfg-batch">
+                <option value="512">512 (Safe / Low RAM)</option>
+                <option value="1024">1,024 (Balanced)</option>
+                <option value="2048" selected>2,048 (High Perf GPU)</option>
+                <option value="4096">4,096 (Max Saturation)</option>
+              </select>
+            </div>
+            <div class="model-settings-col">
+              <label>Parallel Concurrency Slots</label>
+              <select id="modal-cfg-parallel">
+                <option value="1" selected>1 (Single / Max VRAM)</option>
+                <option value="2">2 (Dual slots)</option>
+                <option value="4">4 (Quad slots)</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Engine Tweaks Chips -->
+          <div>
+            <label style="font-size:11.5px; font-weight:600; text-transform:uppercase; letter-spacing:0.5px; color:var(--text-muted); display:block; margin-bottom:6px;">Engine & Memory Tweaks</label>
+            <div class="model-settings-chips">
+              <div class="model-toggle-chip active" id="modal-chip-fa" title="Uses Flash Attention on Vulkan tensor cores">⚡ Flash Attention</div>
+              <div class="model-toggle-chip active" id="modal-chip-mmap" title="Memory map weights into page cache">📁 mmap (Fast load)</div>
+              <div class="model-toggle-chip" id="modal-chip-mlock" title="Lock model in physical RAM to prevent paging">🔒 mlock (Lock RAM)</div>
+            </div>
+          </div>
+
+          <!-- Benchmark Scope Profile Picker -->
+          <div style="padding:14px; background:var(--page); border:1px solid var(--border); border-radius:10px;">
+            <label style="font-size:12px; font-weight:700; color:var(--text); display:block; margin-bottom:8px;">Select Benchmark Test Scope</label>
+            <div class="profile-picker" style="margin-bottom:0;">
+              <label class="profile-option" style="flex:1;">
+                <input type="radio" name="modal-run-profile" value="quick" checked>
+                <span><strong>⚡ Quick Baseline (71 Tasks)</strong><em id="modal-quick-count">Fast validation across 8 capability suites</em></span>
+              </label>
+              <label class="profile-option" style="flex:1;">
+                <input type="radio" name="modal-run-profile" value="full">
+                <span><strong>🎯 Full Benchmark (142 Tasks)</strong><em id="modal-full-count">Comprehensive stress test & capability scoring</em></span>
+              </label>
+            </div>
+          </div>
+
+          <!-- Live Command Preview -->
+          <div>
+            <label style="font-size:11px; font-weight:600; color:var(--text-muted); display:block; margin-bottom:4px;">Command Preview</label>
+            <div class="model-cmd-preview" id="modal-cmd-preview" style="font-size:11px;"></div>
+          </div>
         </div>
-        <div style="flex:1;">
-          <label class="field">Judge model</label>
-          <div class="model-picker">
-            <input type="text" id="run-judge-model" placeholder="Type to search models..." autocomplete="off" role="combobox" aria-expanded="false" aria-autocomplete="list">
-            <div class="model-picker-menu" id="run-judge-model-menu" role="listbox" style="display:none;"></div>
+
+        <div class="model-config-footer">
+          <div class="row" style="gap:8px;">
+            <button type="button" class="secondary small" id="modal-btn-load">▶️ Load Model</button>
+            <button type="button" class="secondary small" id="modal-btn-launch">🖥️ Launch in Terminal</button>
+            <button type="button" class="secondary small" id="modal-btn-unload" style="color:#ef4444; border-color:rgba(239,68,68,0.4);">⏹️ Unload</button>
+          </div>
+          <div class="row" style="gap:10px; align-items:center;">
+            <span id="modal-action-status" style="font-size:12px; color:var(--text-muted);"></span>
+            <button type="button" class="primary" id="modal-btn-run" style="padding:8px 18px; font-weight:700; font-size:13px;">🚀 Start Benchmark</button>
           </div>
         </div>
       </div>
-      <p class="muted" id="frontier-judge-model-status" style="margin-top:4px;"></p>
-      <p class="muted" id="frontier-judge-detail" style="margin-top:10px;"></p>
-      <p class="muted" id="frontier-judge-estimate"></p>
-      <p class="muted" id="frontier-judge-cost"></p>
-    </div>
-    <div class="card" id="frontier-judge-disabled-note" style="display:none;">
-      <p class="muted" id="frontier-judge-disabled-text"></p>
     </div>
 
-    <div class="card">
-      <div id="run-scope-bar" class="run-scope-bar" style="margin-bottom: 12px; display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px;" title="Execution speed depends on your GPU/VRAM offload speed.">
-        <span style="font-weight: 600; font-size: 13px;" id="run-scope-text">Selected: 0 Models · 0 Suites · 0 Problems Total</span>
-        <span class="muted" style="font-size: 11.5px;">ⓘ Task Count Scope</span>
-      </div>
-      <div class="profile-picker" id="profile-picker">
-        <label class="profile-option">
-          <input type="radio" name="run-profile" value="quick">
-          <span><strong>Quick baseline</strong><em id="profile-quick-count"></em></span>
-        </label>
-        <label class="profile-option">
-          <input type="radio" name="run-profile" value="full" checked>
-          <span><strong>Full benchmark</strong><em id="profile-full-count"></em></span>
-        </label>
-      </div>
-      <p class="muted" id="profile-note" style="margin-top:-4px;"></p>
-      <button class="primary" id="start-run">Start Run</button>
-      <button class="secondary" id="stop-run" style="display:none;">Stop Run</button>
-      <span class="muted" id="run-hint">Models are benchmarked one at a time -- this can take a while.</span>
-
-      <div id="run-progress" style="margin-top:16px; display:none;">
-        <div class="banner" id="confirm-banner" style="display:none;">
-          <span id="confirm-message"></span>
-          <button class="secondary" id="confirm-continue">I've loaded it -- Continue</button>
+    <!-- 3. FOCUSED ACTIVE BENCHMARK STAGE (Shown during execution) -->
+    <div id="active-benchmark-stage" style="display:none;">
+      <div class="benchmark-stage-card">
+        <!-- Top Stage Navigation Header -->
+        <div class="row" style="justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+          <button class="secondary small" id="btn-back-to-models">← Back to Model Library</button>
+          <div class="row" style="gap:8px; align-items:center;">
+            <span class="pulse-dot" style="display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--good); box-shadow:0 0 8px var(--good); animation: pulse 1.5s infinite;"></span>
+            <span id="stage-engine-badge" class="model-badge" style="background:var(--page); border:1px solid var(--accent); color:var(--accent); font-weight:600;">llama.cpp Vulkan (Dual GPU)</span>
+            <button class="secondary small" id="stop-run" style="color:#ef4444; border-color:rgba(239,68,68,0.4); font-weight:600;">⏹️ Stop Run</button>
+          </div>
         </div>
 
-        <!-- Hardware Spec Summary Header Banner -->
-        <div id="hardware-specs-banner" class="hw-specs-banner" style="margin-bottom:14px; padding:12px 14px; background:var(--surface); border:1px solid var(--border); border-radius:10px;">
-          <div class="row" style="justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:8px;">
-            <h3 style="margin:0; font-size:13px; display:flex; align-items:center; gap:8px;">
-              <span>🖥️ System Hardware Specs</span>
-              <span id="hw-vendor-badges" class="row" style="gap:4px;"></span>
+        <!-- Hero Model Banner -->
+        <div class="benchmark-hero-banner">
+          <div class="hero-model-title">
+            <h2 id="stage-hero-model-name">Benchmarking Model</h2>
+            <div class="hero-model-sub" id="stage-hero-model-meta">
+              <span>Loading engine parameters...</span>
+            </div>
+          </div>
+          <div class="row" style="gap:10px; flex-wrap:wrap;">
+            <div style="text-align:right;">
+              <div style="font-size:11px; color:var(--text-muted);">Generation Speed</div>
+              <div style="font-size:18px; font-weight:700; color:#60a5fa;" id="stage-tok-sec">⚡ -- tok/s</div>
+            </div>
+            <div style="text-align:right; border-left:1px solid var(--border); padding-left:10px;">
+              <div style="font-size:11px; color:var(--text-muted);">Time to First Token</div>
+              <div style="font-size:18px; font-weight:700; color:var(--text);" id="stage-ttft">⏱️ -- s</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Live Task Progress HUD -->
+        <div style="padding:14px; background:var(--page); border:1px solid var(--border); border-radius:10px;">
+          <div class="row" style="justify-content:space-between; align-items:center; margin-bottom:8px;">
+            <span style="font-size:13px; font-weight:600; color:var(--text);" id="stage-task-label">Executing test suites...</span>
+            <span style="font-size:13px; font-weight:700; color:var(--accent);" id="stage-pct-label">0%</span>
+          </div>
+          <div class="progress-bar-track" style="height:8px; background:var(--surface); border-radius:4px; overflow:hidden;">
+            <div id="stage-progress-fill" style="width:0%; height:100%; background:linear-gradient(90deg, var(--accent), #3b82f6); transition:width 0.3s ease;"></div>
+          </div>
+          <div class="row" style="justify-content:space-between; font-size:11.5px; color:var(--text-muted); margin-top:6px;">
+            <span id="stage-task-count">Task 0 of 0</span>
+            <span id="stage-status-detail">Streaming output & calculating accuracy</span>
+          </div>
+        </div>
+
+        <!-- Real-Time Hardware Telemetry -->
+        <div style="padding:14px; background:var(--page); border:1px solid var(--border); border-radius:10px;">
+          <div class="row" style="justify-content:space-between; align-items:center; margin-bottom:10px;">
+            <h3 style="margin:0; font-size:13px; display:flex; align-items:center; gap:6px;">
+              <span>📊 Real-Time Dual GPU & System Hardware Telemetry</span>
+              <span class="pulse-dot" style="display:inline-block; width:7px; height:7px; border-radius:50%; background:var(--good); box-shadow:0 0 6px var(--good);"></span>
             </h3>
-            <span class="muted" id="hw-os-badge" style="font-size:11.5px;"></span>
+            <span class="muted" style="font-size:11px;">RX 7800 XT (16GB) + RX 6650 XT (8GB)</span>
           </div>
-          <div class="hw-specs-grid" id="hw-specs-grid" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:8px;">
-            <div class="hw-spec-item" style="padding:6px 10px; background:var(--page); border-radius:6px; border:1px solid var(--border);"><span class="hw-label" style="font-size:11px; color:var(--text-muted); display:block;">🎴 GPU</span><span class="hw-value" id="hw-val-gpu" style="font-size:12.5px; font-weight:600; color:var(--text);">Detecting...</span></div>
-            <div class="hw-spec-item" style="padding:6px 10px; background:var(--page); border-radius:6px; border:1px solid var(--border);"><span class="hw-label" style="font-size:11px; color:var(--text-muted); display:block;">🖥️ CPU</span><span class="hw-value" id="hw-val-cpu" style="font-size:12.5px; font-weight:600; color:var(--text);">Detecting...</span></div>
-            <div class="hw-spec-item" style="padding:6px 10px; background:var(--page); border-radius:6px; border:1px solid var(--border);"><span class="hw-label" style="font-size:11px; color:var(--text-muted); display:block;">🧠 RAM</span><span class="hw-value" id="hw-val-ram" style="font-size:12.5px; font-weight:600; color:var(--text);">Detecting...</span></div>
-          </div>
+          <div class="live-monitor-grid" id="live-monitor-grid"></div>
         </div>
 
-        <!-- Live Performance Telemetry HUD -->
-        <div id="run-telemetry-hud" class="run-telemetry-hud" style="display:none; margin-bottom:14px; padding:12px; background:var(--page); border:1px solid var(--accent); border-radius:10px; box-shadow: 0 0 15px rgba(0, 210, 255, 0.15);">
-          <div class="row" style="justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:8px;">
-            <div class="row" style="gap:8px; align-items:center;">
-              <span class="pulse-dot" style="display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--good); box-shadow:0 0 8px var(--good); animation: pulse 1.5s infinite;"></span>
-              <strong id="hud-active-model" style="font-size:13px; color:var(--text);">Benchmarking...</strong>
-            </div>
-            <div class="row" style="gap:6px; flex-wrap:wrap;">
-              <span class="model-badge" style="background:rgba(59, 130, 246, 0.15); color:#60a5fa; border:1px solid rgba(59, 130, 246, 0.3);" id="hud-tok-sec">⚡ -- tok/s</span>
-              <span class="model-badge" style="background:var(--surface);" id="hud-ttft">⏱️ -- TTFT</span>
-            </div>
-          </div>
-          <div class="progress-bar-track" style="height:6px; background:var(--surface); border-radius:4px; overflow:hidden;">
-            <div id="hud-progress-fill" style="width:0%; height:100%; background:linear-gradient(90deg, var(--accent), #3b82f6); transition:width 0.3s ease;"></div>
-          </div>
-          <div class="row" style="justify-content:space-between; font-size:11px; color:var(--text-muted); margin-top:4px;">
-            <span id="hud-progress-text">Task 0 / 0</span>
-            <span id="hud-pct-text">0%</span>
-          </div>
+        <!-- Live Benchmark Terminal Log -->
+        <div>
+          <h3 style="margin:0 0 8px 0; font-size:13px; display:flex; align-items:center; gap:6px;">
+            <span>💻 Live Benchmark Output Stream</span>
+          </h3>
+          <div class="log" id="run-log" style="height:320px; overflow-y:auto; font-size:12px; line-height:1.5;"></div>
         </div>
-
-        <h3 style="margin-bottom:8px; display:flex; align-items:center; gap:6px;">
-          <span>Live Hardware Monitor</span>
-          <span class="pulse-dot" style="display:inline-block; width:7px; height:7px; border-radius:50%; background:var(--good); box-shadow:0 0 6px var(--good);"></span>
-        </h3>
-        <p class="muted" style="margin-top:0;">Sampled every ~1s (GPU refreshes every ~3rd sample). Real-time observation telemetry.</p>
-        <div class="live-monitor-grid" id="live-monitor-grid"></div>
-        <div class="log" id="run-log" style="margin-top:16px;"></div>
       </div>
     </div>
   </section>
