@@ -168,6 +168,10 @@ def models_catalog() -> dict:
                     key = entry.get("modelKey") or entry.get("indexedModelIdentifier")
                     if not key:
                         continue
+                    file_p = entry.get("path")
+                    if file_p and not os.path.exists(file_p):
+                        # Ghost model -- file was deleted from disk
+                        continue
                     quant = entry.get("quantization") or {}
                     catalog[key] = {
                         "display_name": entry.get("displayName"),
@@ -180,7 +184,7 @@ def models_catalog() -> dict:
                         "vision": entry.get("vision"),
                         "tool_use": entry.get("trainedForToolUse"),
                         "type": entry.get("type"),
-                        "file_path": entry.get("path"),
+                        "file_path": file_p,
                     }
         except Exception:
             pass

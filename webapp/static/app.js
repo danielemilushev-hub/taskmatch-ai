@@ -1037,22 +1037,24 @@ async function loadConfig() {
   try {
     const data = await api("/api/models/detect");
     if (data.models && data.models.length) {
+      // ONLY show verified physical models that exist on disk or active runtime
+      modelList = data.models;
       const detectedSet = new Set(data.models);
-      modelList = [...data.models, ...configModels.filter((m) => !detectedSet.has(m))];
+      // Pre-select configured models if they physically exist
       configModels.filter((m) => detectedSet.has(m)).forEach((m) => state.selectedModels.add(m));
-      const missing = configModels.filter((m) => !detectedSet.has(m));
+      if (state.selectedModels.size === 0 && data.models.length > 0) {
+        state.selectedModels.add(data.models[0]);
+      }
       if (detectStatus) {
-        detectStatus.textContent =
-          `auto-detected ${data.models.length} model(s) on the runtime` +
-          (missing.length ? ` — ${missing.length} config model(s) not found here (deselected)` : "");
+        detectStatus.textContent = `Found ${data.models.length} verified model(s) on disk & runtime`;
       }
     } else {
-      configModels.forEach((m) => state.selectedModels.add(m));
-      if (detectStatus) detectStatus.textContent = "runtime reports no models — showing config.yaml list";
+      modelList = [];
+      if (detectStatus) detectStatus.textContent = "No models found on disk or runtime";
     }
   } catch (e) {
-    configModels.forEach((m) => state.selectedModels.add(m));
-    if (detectStatus) detectStatus.textContent = "runtime not reachable — showing config.yaml models";
+    modelList = [];
+    if (detectStatus) detectStatus.textContent = "Detection error: " + e.message;
   }
   renderModelGrid(document.getElementById("model-checklist"), modelList, state.selectedModels);
   renderSuiteGrid(
