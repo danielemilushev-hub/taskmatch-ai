@@ -99,21 +99,45 @@ def cmd_run(args: argparse.Namespace) -> None:
 
 
 def cmd_serve(args: argparse.Namespace) -> None:
+    import socket
     import threading
     import time
+    import requests
     import uvicorn
 
     if bootstrap_config():
         print("created config.yaml from config.example.yaml -- edit it, or use the Settings tab")
 
+    target_port = args.port
+
+    # Check if a TaskMatch instance is already active on this port
+    try:
+        r = requests.get(f"http://127.0.0.1:{target_port}/api/hardware/specs", timeout=0.8)
+        if r.status_code == 200:
+            print(f"[*] TaskMatch AI is already active on http://127.0.0.1:{target_port}")
+            print(f"[*] Opening browser to http://127.0.0.1:{target_port}...")
+            if not args.no_browser:
+                webbrowser.open(f"http://127.0.0.1:{target_port}")
+            return
+    except Exception:
+        pass
+
+    def _is_bound(p: int) -> bool:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            return s.connect_ex(("127.0.0.1", p)) == 0
+
+    while _is_bound(target_port):
+        print(f"[!] Port {target_port} is in use. Trying port {target_port + 1}...")
+        target_port += 1
+
     def _open_browser() -> None:
         time.sleep(1.0)
-        webbrowser.open(f"http://localhost:{args.port}")
+        webbrowser.open(f"http://localhost:{target_port}")
 
     if not args.no_browser:
         threading.Thread(target=_open_browser, daemon=True).start()
 
-    uvicorn.run("webapp.main:app", host="127.0.0.1", port=args.port)
+    uvicorn.run("webapp.main:app", host="127.0.0.1", port=target_port)
 
 
 def main() -> None:

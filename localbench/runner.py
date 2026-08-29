@@ -168,16 +168,17 @@ def _switch_to_model(model_cfg: dict, base_url: str, unload_all_cmd: str | None,
 
     if flavor == "llamacpp":
         from . import llamacpp_mgr
+        target_url = "http://localhost:8080/v1"
         log(f"launching llama-server terminal for '{name}'...")
-        ok, msg = llamacpp_mgr.launch_llama_server(model_cfg, in_terminal=True)
+        ok, msg = llamacpp_mgr.launch_llama_server(model_cfg, in_terminal=True, port=8080)
         if not ok:
             raise ModelSwitchError(msg)
-        log(f"{msg} -- waiting for readiness on {base_url}...")
-        if not llamacpp_mgr.wait_for_server_ready(base_url, timeout_seconds=45.0):
+        log(f"{msg} -- waiting for readiness on {target_url}...")
+        if not llamacpp_mgr.wait_for_server_ready(target_url, timeout_seconds=45.0):
             raise ModelSwitchError(
-                f"llama-server was launched but did not report ready on {base_url}/models within 45s. Check the terminal window for details."
+                f"llama-server was launched but did not report ready on {target_url}/models within 45s. Check the terminal window for details."
             )
-        log(f"llama-server is online and ready on {base_url}")
+        log(f"llama-server is online and ready on {target_url}")
         return
 
     cmd = _build_runtime_load_cmd(model_cfg)
@@ -338,8 +339,18 @@ def run_benchmark(
         model_name = model_cfg["name"]
         _check_cancel(f"loading {model_name}")
         log(f"[{i + 1}/{len(models)}] switching to model: {model_name}")
+        flavor = model_cfg.get("runtime_flavor") or (model_cfg.get("settings") or {}).get("runtime_flavor")
+        if flavor == "llamacpp":
+            effective_base_url = "http://localhost:8080/v1"
+        elif flavor == "ollama":
+            effective_base_url = "http://localhost:11434/v1"
+        elif flavor == "vllm":
+            effective_base_url = "http://localhost:8000/v1"
+        else:
+            effective_base_url = model_cfg.get("base_url") or base_url
+
         try:
-            _switch_to_model(model_cfg, base_url, unload_all_cmd, log, confirm)
+            _switch_to_model(model_cfg, effective_base_url, unload_all_cmd, log, confirm)
         except ModelSwitchError as e:
             log(f"SKIPPED [{model_name}]: {e}")
             skipped_models.append(model_name)
@@ -350,13 +361,21 @@ def run_benchmark(
         effective_max_tokens = model_sampling.get("max_tokens", sampling.get("max_tokens", 1024))
 
         ctx = RunContext(
-            base_url=base_url,
+            base_url=effective_base_url,
             model=model_name,
             api_key=api_key,
             timeout_seconds=timeout_seconds,
             temperature=effective_temp,
             max_tokens=effective_max_tokens,
         )
+
+        # Pre-flight health probe: verify the runtime actually returns a chat completion
+        probe = ctx.call([{"role": "user", "content": "1+1="}], max_tokens=8)
+        if not probe.success:
+            log(f"SKIPPED [{model_name}]: Runtime at {effective_base_url} is not responding ({probe.error}). Ensure the model is loaded in VRAM.")
+            skipped_models.append(model_name)
+            _unload_model(model_cfg, log)
+            continue
 
         runtime_info = _capture_lms_load_info(model_name) or {}
         for k in [

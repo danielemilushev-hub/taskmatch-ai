@@ -233,6 +233,7 @@ def find_model_gguf(model_name: str, search_dirs: list[str] | None = None) -> st
 
 def build_llama_server_args(model_cfg: dict, gguf_path: str, port: int = 8080) -> list[str]:
     """Build list of command line arguments for llama-server."""
+    norm_gguf = os.path.normpath(os.path.abspath(gguf_path))
     settings = model_cfg.get("settings") or model_cfg
     ctx_len = settings.get("context_length") or model_cfg.get("context_length")
     parallel = settings.get("parallel") or model_cfg.get("parallel")
@@ -240,11 +241,11 @@ def build_llama_server_args(model_cfg: dict, gguf_path: str, port: int = 8080) -
     fa = settings.get("flash_attention") if "flash_attention" in settings else model_cfg.get("flash_attention", True)
     mmap = settings.get("mmap") if "mmap" in settings else model_cfg.get("mmap", True)
     mlock = settings.get("mlock") or model_cfg.get("mlock", False)
-    batch = settings.get("batch_size") or model_cfg.get("batch_size", 512)
+    batch = settings.get("batch_size") or model_cfg.get("batch_size", 2048)
     split = settings.get("split_mode") or model_cfg.get("split_mode")
     ngl = settings.get("gpu_offload_layers") or model_cfg.get("gpu_offload_layers", 99)
 
-    args = ["-m", gguf_path, "--port", str(port), "-ngl", str(ngl)]
+    args = ["-m", norm_gguf, "--port", str(port), "-ngl", str(ngl)]
 
     if ctx_len:
         args += ["-c", str(ctx_len)]
@@ -252,8 +253,10 @@ def build_llama_server_args(model_cfg: dict, gguf_path: str, port: int = 8080) -
         args += ["-np", str(parallel)]
     if kv and kv != "f16":
         args += ["-ctk", str(kv), "-ctv", str(kv)]
-    if fa:
-        args.append("-fa")
+    if fa is True:
+        args += ["-fa", "on"]
+    elif fa is False:
+        args += ["-fa", "off"]
     if mmap is False:
         args.append("--no-mmap")
     if mlock:
@@ -266,7 +269,7 @@ def build_llama_server_args(model_cfg: dict, gguf_path: str, port: int = 8080) -
     return args
 
 
-def wait_for_server_ready(base_url: str, timeout_seconds: float = 45.0) -> bool:
+def wait_for_server_ready(base_url: str = "http://localhost:8080/v1", timeout_seconds: float = 45.0) -> bool:
     """Poll the /v1/models endpoint until the server reports ready."""
     url = base_url.rstrip("/") + "/models"
     start = time.monotonic()
@@ -323,33 +326,36 @@ def launch_llama_server(
     _MANAGED_PORT = port
 
     model_name = model_cfg.get("name") or "model"
-    binary = find_llama_server_binary(custom_binary)
-    if not binary:
+    raw_binary = find_llama_server_binary(custom_binary)
+    if not raw_binary:
         return False, "Could not find llama-server.exe binary on this machine."
+    binary = os.path.normpath(os.path.abspath(raw_binary))
 
     gguf_path = find_model_gguf(model_name)
     if not gguf_path:
         return False, f"Could not locate GGUF model file matching '{model_name}' in local models directories."
+    norm_gguf = os.path.normpath(os.path.abspath(gguf_path))
 
     # Stop any previous instance to ensure port and VRAM are clean
     stop_llama_server(port)
 
-    args = build_llama_server_args(model_cfg, gguf_path, port=port)
+    args = build_llama_server_args(model_cfg, norm_gguf, port=port)
+    bin_dir = os.path.dirname(binary)
 
     if in_terminal and os.name == "nt":
-        # Launch visible interactive Windows Terminal / Command Prompt window
-        title = f"llama.cpp Server [{os.path.basename(gguf_path)}] on :{port}"
-        cmd_str = f'"{binary}" ' + " ".join(f'"{a}"' if " " in str(a) else str(a) for a in args)
-        launch_cmd = f'start "{title}" {cmd_str}'
+        # Launch visible interactive Windows Terminal / Command Prompt window with /k so it stays open
+        title = f"llama.cpp Server [{os.path.basename(norm_gguf)}] on :{port}"
+        formatted_args = " ".join(f'"{a}"' if " " in str(a) else str(a) for a in args)
+        launch_cmd = f'start "{title}" /D "{bin_dir}" cmd.exe /k "\"{binary}\" {formatted_args}"'
         try:
-            _MANAGED_PROCESS = subprocess.Popen(launch_cmd, shell=True)
-            return True, f"Launched llama-server in terminal for '{os.path.basename(gguf_path)}' on port {port}"
+            _MANAGED_PROCESS = subprocess.Popen(launch_cmd, shell=True, cwd=bin_dir)
+            return True, f"Launched llama-server in terminal for '{os.path.basename(norm_gguf)}' on port {port}"
         except Exception as e:
             return False, f"Failed to open terminal for llama-server: {e}"
     else:
         try:
             full_cmd = [binary] + args
-            _MANAGED_PROCESS = subprocess.Popen(full_cmd)
-            return True, f"Started llama-server background process for '{os.path.basename(gguf_path)}' on port {port}"
+            _MANAGED_PROCESS = subprocess.Popen(full_cmd, cwd=bin_dir)
+            return True, f"Started llama-server background process for '{os.path.basename(norm_gguf)}' on port {port}"
         except Exception as e:
             return False, f"Failed to start llama-server process: {e}"

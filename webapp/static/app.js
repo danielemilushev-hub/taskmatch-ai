@@ -279,9 +279,8 @@ function buildBadgesFromNameGuess(modelName) {
 function getModelSettings(modelName) {
   state.modelSettings = state.modelSettings || {};
   if (!state.modelSettings[modelName]) {
-    const isGguf = modelName.toLowerCase().endsWith(".gguf") || (state.modelCatalog && state.modelCatalog[modelName] && state.modelCatalog[modelName].format === "gguf");
     state.modelSettings[modelName] = {
-      runtime_flavor: isGguf ? "llamacpp" : "lmstudio",
+      runtime_flavor: "llamacpp",
       context_length: null,
       parallel: 1,
       gpu_kv: "f16",
@@ -289,7 +288,7 @@ function getModelSettings(modelName) {
       flash_attention: true,
       mmap: true,
       mlock: false,
-      batch_size: 512,
+      batch_size: 2048,
       split_mode: "layer",
       sampling: {
         temperature: 0.2,
@@ -303,7 +302,10 @@ function getModelSettings(modelName) {
 }
 
 function generatePreviewCmd(modelName, s) {
-  const flavor = s.runtime_flavor || "lmstudio";
+  const flavor = s.runtime_flavor || "llamacpp";
+  const catalogEntry = state.modelCatalog ? state.modelCatalog[modelName] : null;
+  const fullPath = (catalogEntry && catalogEntry.file_path) || s.file_path || modelName;
+
   if (flavor === "lmstudio") {
     let cmd = `lms load "${modelName}" -y --gpu ${s.gpu_offload || "max"}`;
     if (s.context_length) cmd += ` -c ${s.context_length}`;
@@ -311,11 +313,12 @@ function generatePreviewCmd(modelName, s) {
     if (s.speculative_draft_mtp) cmd += ` --speculative-draft-mtp`;
     return cmd;
   } else if (flavor === "llamacpp") {
-    let cmd = `llama-server -m "${modelName}" -ngl 99`;
+    let cmd = `llama-server -m "${fullPath}" -ngl 99`;
     if (s.context_length) cmd += ` -c ${s.context_length}`;
     if (s.parallel && s.parallel !== 1) cmd += ` -np ${s.parallel}`;
     if (s.gpu_kv && s.gpu_kv !== "f16") cmd += ` -ctk ${s.gpu_kv} -ctv ${s.gpu_kv}`;
-    if (s.flash_attention) cmd += ` -fa`;
+    if (s.flash_attention) cmd += ` -fa on`;
+    else if (s.flash_attention === false) cmd += ` -fa off`;
     if (s.mmap === false) cmd += ` --no-mmap`;
     if (s.mlock) cmd += ` --mlock`;
     if (s.batch_size) cmd += ` -b ${s.batch_size}`;
@@ -629,8 +632,8 @@ function renderModelGrid(container, models, selectedSet, searchQuery = "") {
     const kvSelect = document.createElement("select");
     [
       { value: "f16", label: "FP16 (Uncompressed)" },
-      { value: "q8_0", label: "Q8_0 (8-bit — ~50% VRAM savings)" },
-      { value: "q4_0", label: "Q4_0 (4-bit — ~75% VRAM savings)" },
+      { value: "q8_0", label: "Q8_0 (8-bit — ~50% VRAM)" },
+      { value: "q4_0", label: "Q4_0 (4-bit — ~75% VRAM)" },
     ].forEach((opt) => {
       const optEl = document.createElement("option");
       optEl.value = opt.value;
@@ -640,6 +643,29 @@ function renderModelGrid(container, models, selectedSet, searchQuery = "") {
     });
     kvCol.appendChild(kvSelect);
     row2.appendChild(kvCol);
+
+    const batchCol = document.createElement("div");
+    batchCol.className = "model-settings-col";
+    batchCol.innerHTML = "<label>Prompt Batch Size (-b)</label>";
+    const batchSelect = document.createElement("select");
+    [
+      { value: "512", label: "512 (Safe / Low RAM)" },
+      { value: "1024", label: "1,024 (Balanced)" },
+      { value: "2048", label: "2,048 (High Perf GPU)" },
+      { value: "4096", label: "4,096 (Max Saturation)" },
+    ].forEach((opt) => {
+      const optEl = document.createElement("option");
+      optEl.value = opt.value;
+      optEl.textContent = opt.label;
+      if (String(settings.batch_size || 2048) === opt.value) optEl.selected = true;
+      batchSelect.appendChild(optEl);
+    });
+    batchSelect.addEventListener("change", (e) => {
+      settings.batch_size = parseInt(e.target.value, 10);
+      updatePreview();
+    });
+    batchCol.appendChild(batchSelect);
+    row2.appendChild(batchCol);
     drawer.appendChild(row2);
 
     // 3. Engine Flags Row (Flash Attention, mmap, mlock)

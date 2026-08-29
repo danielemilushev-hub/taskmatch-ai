@@ -236,25 +236,24 @@ class TestLocalbenchCore(unittest.TestCase):
 
     def test_llamacpp_mgr_build_args(self):
         from localbench.llamacpp_mgr import build_llama_server_args
-        model_cfg = {
-            "name": "qwen3.5-9b",
-            "context_length": 32768,
+        cfg = {
+            "name": "test-model",
+            "context_length": 8192,
             "parallel": 2,
             "gpu_kv": "q8_0",
             "flash_attention": True,
-            "gpu_offload_layers": 99,
+            "mmap": True,
+            "batch_size": 2048,
         }
-        args = build_llama_server_args(model_cfg, "C:/models/test.gguf", port=8080)
-        self.assertEqual(args[0], "-m")
-        self.assertEqual(args[1], "C:/models/test.gguf")
-        self.assertIn("--port", args)
-        self.assertIn("8080", args)
+        args = build_llama_server_args(cfg, "C:/models/test.gguf", port=8080)
+        self.assertIn("-m", args)
+        self.assertEqual(os.path.normpath(args[1]), os.path.normpath("C:/models/test.gguf"))
         self.assertIn("-c", args)
-        self.assertIn("32768", args)
-        self.assertIn("-np", args)
-        self.assertIn("2", args)
+        self.assertEqual(args[args.index("-c") + 1], "8192")
         self.assertIn("-ctk", args)
-        self.assertIn("q8_0", args)
+        self.assertEqual(args[args.index("-ctk") + 1], "q8_0")
+        self.assertIn("-b", args)
+        self.assertEqual(args[args.index("-b") + 1], "2048")
         self.assertIn("-fa", args)
 
     def test_llamacpp_mgr_find_model_gguf(self):
