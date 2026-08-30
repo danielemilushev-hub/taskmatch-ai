@@ -20,7 +20,11 @@ Fixes two problems reported from a fresh install on a second machine.
   short of a restart. Filtering now requires positive evidence of the GPU
   inventory: if nothing was enumerated, nothing is filtered. A backend that
   enumerated its own devices is also always kept, even if the device name
-  matches no known vendor pattern (e.g. Intel Arc).
+  matches no known vendor pattern (e.g. Intel Arc). Additionally, a backend
+  that successfully enumerated devices earlier in the session keeps them if a
+  later probe fails transiently, and the probe timeout was raised from 15s to
+  40s — GPU runtimes can be slow to initialise on a laptop or while the GPU
+  is already busy, which was a plausible cause of the original report.
 - **No way to tell which version was running.** The header showed a hardcoded
   "PRO v2.5" unrelated to the real version, and `localbench/__init__.py` had
   drifted to 0.1.0 while `pyproject.toml` said 0.2.0. There is now a single

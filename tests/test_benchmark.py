@@ -7,6 +7,15 @@ from localbench.engine import _has_repetition
 from localbench.gpu_probe import _rocm_smi_json_to_reading, _ioreg_entries_to_reading, _amd_smi_json_to_reading
 
 class TestLocalbenchCore(unittest.TestCase):
+    def setUp(self):
+        # probe_backend_devices remembers the last successful device list per
+        # binary (so a transient failure doesn't drop a working GPU backend).
+        # That cache is process-global, so without clearing it a test that
+        # mocks a successful probe leaks into a later test that mocks a
+        # failure for the same fake path.
+        from localbench import llamacpp_mgr
+        llamacpp_mgr._LAST_GOOD_PROBE.clear()
+
     def test_json_extract_clean(self):
         val, err = extract_json('{"key": "value"}')
         self.assertIsNone(err)
@@ -649,6 +658,39 @@ class TestLocalbenchCore(unittest.TestCase):
         index_html = (root / "webapp" / "static" / "index.html").read_text(encoding="utf-8")
         self.assertIn("__APP_VERSION__", index_html)
         self.assertNotIn("PRO v2.5", index_html)
+
+    def test_probe_falls_back_to_last_good_devices_on_transient_failure(self):
+        import subprocess as sp
+        from unittest.mock import patch
+        from localbench import llamacpp_mgr as m
+
+        m._LAST_GOOD_PROBE.clear()
+
+        class Ok:
+            returncode = 0
+            stdout = "  CUDA0: NVIDIA GeForce RTX 5060 Laptop GPU (8188 MiB, 8000 MiB free)\n"
+            stderr = ""
+
+        with patch.object(m.subprocess, "run", return_value=Ok()):
+            first = m.probe_backend_devices("cuda.exe")
+        self.assertTrue(first["available"])
+        self.assertEqual(len(first["devices"]), 1)
+
+        # A backend that demonstrably worked must not become unavailable
+        # because a later probe timed out (GPU busy after a run) -- that is
+        # the "my NVIDIA card got lost after one test" report.
+        with patch.object(m.subprocess, "run", side_effect=sp.TimeoutExpired(cmd="x", timeout=40)):
+            again = m.probe_backend_devices("cuda.exe")
+        self.assertTrue(again["available"])
+        self.assertTrue(again.get("stale"))
+        self.assertEqual([d["name"] for d in again["devices"]], [d["name"] for d in first["devices"]])
+
+        # But a binary that never worked must stay unavailable -- the cache
+        # must not invent a working backend.
+        with patch.object(m.subprocess, "run", side_effect=sp.TimeoutExpired(cmd="x", timeout=40)):
+            never = m.probe_backend_devices("never-worked.exe")
+        self.assertFalse(never["available"])
+        m._LAST_GOOD_PROBE.clear()
 
     def test_list_llama_backends_keeps_all_when_no_devices_enumerated(self):
         from unittest.mock import patch

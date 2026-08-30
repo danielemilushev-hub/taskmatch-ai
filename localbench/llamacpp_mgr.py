@@ -223,7 +223,45 @@ def _env_with_vendor_dirs(binary_path: str) -> dict:
     return env
 
 
-def probe_backend_devices(binary_path: str, timeout: float = 15.0) -> dict:
+# Last successful probe per binary, for this process only. A GPU backend that
+# enumerated devices once is known to work; a later probe of the same binary
+# can still fail for transient reasons (the GPU is busy serving the model just
+# benchmarked, driver init is slow under load, the call times out). Falling
+# back to the last good answer keeps a working backend selectable instead of
+# making it unavailable until the app is restarted -- the concrete complaint
+# behind "the NVIDIA card got lost after one test". Never persisted, so a
+# genuine hardware change is picked up on the next launch.
+_LAST_GOOD_PROBE: dict[str, dict] = {}
+
+# GPU runtimes can take a while to initialise on first call -- notably CUDA on
+# a laptop with hybrid graphics, or any backend while the GPU is already busy.
+# 15s was tight enough to time out in exactly those cases.
+_PROBE_TIMEOUT_SECONDS = 40.0
+
+
+def _probe_failure(binary_path: str, error: str) -> dict:
+    """Result for a failed probe, reusing this binary's last successful device
+    list if it has one.
+
+    A backend that enumerated devices earlier in this session demonstrably
+    works; a probe failing now is far more likely to be transient (busy GPU,
+    slow driver init, timeout) than the hardware having vanished. Reporting it
+    as unavailable made a working GPU backend unselectable until restart.
+    `stale` marks that the devices come from the earlier probe, not this one.
+    """
+    cached = _LAST_GOOD_PROBE.get(binary_path)
+    if cached:
+        return {
+            "available": True,
+            "devices": cached["devices"],
+            "error": None,
+            "stale": True,
+            "last_error": error,
+        }
+    return {"available": False, "devices": [], "error": error}
+
+
+def probe_backend_devices(binary_path: str, timeout: float = _PROBE_TIMEOUT_SECONDS) -> dict:
     """Actually attempt to launch `binary_path --list-devices` and parse the
     result -- the only reliable way to know a backend truly works, as
     opposed to trusting that its files exist. A backend can be fully
@@ -248,9 +286,9 @@ def probe_backend_devices(binary_path: str, timeout: float = 15.0) -> dict:
             env=_env_with_vendor_dirs(binary_path),
         )
     except subprocess.TimeoutExpired:
-        return {"available": False, "devices": [], "error": f"timed out after {timeout}s"}
+        return _probe_failure(binary_path, f"timed out after {timeout}s")
     except OSError as e:
-        return {"available": False, "devices": [], "error": str(e)}
+        return _probe_failure(binary_path, str(e))
 
     if proc.returncode != 0:
         # Windows STATUS_DLL_NOT_FOUND surfaces as a huge unsigned return
@@ -264,11 +302,7 @@ def probe_backend_devices(binary_path: str, timeout: float = 15.0) -> dict:
             # installed at all) is the likely remaining cause, not a generic
             # VC++ redistributable gap.
             detail = (detail + " -- ").strip(" -") + "missing a required runtime DLL even with known vendor runtime paths added (the GPU driver itself may be missing, or this GPU vendor isn't present on this machine)"
-        return {
-            "available": False,
-            "devices": [],
-            "error": detail or f"exited with code {proc.returncode}",
-        }
+        return _probe_failure(binary_path, detail or f"exited with code {proc.returncode}")
 
     devices = []
     for line in proc.stdout.splitlines():
@@ -283,10 +317,12 @@ def probe_backend_devices(binary_path: str, timeout: float = 15.0) -> dict:
                 }
             )
 
-    # A clean exit means the binary launched and ran successfully -- an
-    # empty device list is expected and correct for a CPU-only build (there
-    # is no GPU to enumerate, not a failure), so it does not mark this
-    # backend unavailable.
+    # A clean exit means the binary launched and ran successfully -- an empty
+    # device list is expected and correct for a CPU-only build (there is no
+    # GPU to enumerate, not a failure), so it does not mark this backend
+    # unavailable. Only a non-empty list is worth remembering as known-good.
+    if devices:
+        _LAST_GOOD_PROBE[binary_path] = {"devices": devices}
     return {"available": True, "devices": devices, "error": None}
 
 
