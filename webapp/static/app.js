@@ -3932,7 +3932,22 @@ function buildParetoChart(series, categories, getSuite) {
   const plotW = width - marginLeft - marginRight;
   const plotH = height - marginTop - marginBottom;
 
-  const maxSpeed = Math.max(10, ...points.map((p) => p.speed * 1.15));
+  // X domain: pad around the data rather than forcing a zero origin. A zero
+  // origin pushed every model into the right-hand third (e.g. 49-91 tok/s on
+  // a 0-105 axis), leaving half the plot empty and the points overlapping.
+  // Position, not length, encodes value in a scatter, so a non-zero origin is
+  // legitimate here -- and the tick labels below make the real range explicit,
+  // which is what stops a zoomed axis from misleading.
+  const speeds = points.map((p) => p.speed).filter((v) => Number.isFinite(v));
+  const rawMin = speeds.length ? Math.min(...speeds) : 0;
+  const rawMax = speeds.length ? Math.max(...speeds) : 10;
+  // Keep a floor on the span so near-identical speeds don't get magnified
+  // into a dramatic-looking spread.
+  const span = Math.max(rawMax - rawMin, Math.max(rawMax * 0.25, 5));
+  const pad = span * 0.18;
+  const xMin = Math.max(0, rawMin - pad);
+  const xMax = rawMax + pad;
+  const xOf = (speed) => marginLeft + ((speed - xMin) / (xMax - xMin || 1)) * plotW;
 
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
@@ -3957,9 +3972,34 @@ function buildParetoChart(series, categories, getSuite) {
     svg.appendChild(label);
   });
 
+  // X tick values. Without these the axis had a title but no numbers at all,
+  // so the speed of any point was unreadable -- the chart could show that one
+  // model was faster, but never by how much.
+  const X_TICKS = 5;
+  for (let i = 0; i < X_TICKS; i++) {
+    const val = xMin + ((xMax - xMin) * i) / (X_TICKS - 1);
+    const x = xOf(val);
+
+    const vline = document.createElementNS(svg.namespaceURI, "line");
+    vline.setAttribute("x1", x);
+    vline.setAttribute("x2", x);
+    vline.setAttribute("y1", marginTop);
+    vline.setAttribute("y2", marginTop + plotH);
+    vline.setAttribute("class", "gridline");
+    svg.appendChild(vline);
+
+    const tick = document.createElementNS(svg.namespaceURI, "text");
+    tick.setAttribute("x", x);
+    tick.setAttribute("y", marginTop + plotH + 15);
+    tick.setAttribute("text-anchor", "middle");
+    tick.setAttribute("font-size", "10.5");
+    tick.textContent = val >= 100 ? val.toFixed(0) : val.toFixed(1);
+    svg.appendChild(tick);
+  }
+
   const xLabel = document.createElementNS(svg.namespaceURI, "text");
   xLabel.setAttribute("x", marginLeft + plotW / 2);
-  xLabel.setAttribute("y", height - 8);
+  xLabel.setAttribute("y", height - 6);
   xLabel.setAttribute("text-anchor", "middle");
   xLabel.setAttribute("font-size", "11.5");
   xLabel.setAttribute("class", "cat-label");
@@ -3985,7 +4025,7 @@ function buildParetoChart(series, categories, getSuite) {
 
   if (frontier.length > 1) {
     const dStr = frontier.map((p, i) => {
-      const cx = marginLeft + (p.speed / maxSpeed) * plotW;
+      const cx = xOf(p.speed);
       const cy = marginTop + plotH - (p.passRate / 100) * plotH;
       return `${i === 0 ? "M" : "L"}${cx},${cy}`;
     }).join(" ");
@@ -3996,9 +4036,15 @@ function buildParetoChart(series, categories, getSuite) {
     svg.appendChild(pLine);
   }
 
+  // Alternate label side so two models at similar speed/accuracy do not
+  // print their names on top of each other (observed live with four
+  // models clustered in the top-right).
+  const bySpeed = [...points].sort((a, b) => a.speed - b.speed);
   points.forEach((p) => {
-    const cx = marginLeft + (p.speed / maxSpeed) * plotW;
+    const cx = xOf(p.speed);
     const cy = marginTop + plotH - (p.passRate / 100) * plotH;
+    const rank = bySpeed.indexOf(p);
+    const flip = rank % 2 === 1;
 
     const circle = document.createElementNS(svg.namespaceURI, "circle");
     circle.setAttribute("cx", cx);
@@ -4008,8 +4054,11 @@ function buildParetoChart(series, categories, getSuite) {
     circle.setAttribute("class", "scatter-point");
 
     const textLabel = document.createElementNS(svg.namespaceURI, "text");
-    textLabel.setAttribute("x", cx + 9);
-    textLabel.setAttribute("y", cy + 4);
+    // Anchor away from the right edge so long names stay inside the plot.
+    const nearRight = cx > marginLeft + plotW * 0.72;
+    textLabel.setAttribute("x", nearRight ? cx - 9 : cx + 9);
+    textLabel.setAttribute("text-anchor", nearRight ? "end" : "start");
+    textLabel.setAttribute("y", cy + (flip ? 18 : -9));
     textLabel.setAttribute("font-size", "11");
     textLabel.setAttribute("font-weight", "600");
     textLabel.setAttribute("fill", seriesColor(p.index));
