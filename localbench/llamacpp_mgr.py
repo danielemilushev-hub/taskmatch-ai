@@ -316,17 +316,19 @@ def list_llama_backends_with_status() -> list[dict]:
     which of those genuinely work on this machine right now, and their
     real device lists for GPU selection.
 
-    A backend whose target vendor doesn't match ANY GPU actually detected on
-    this machine is dropped from the result entirely (e.g. CUDA on an
-    all-AMD machine) rather than shown as a perpetually-disabled option --
-    that vendor mismatch can never be fixed by anything the user does here,
-    unlike a genuinely missing runtime DLL. This is derived live from
-    whatever device names were actually enumerated (Vulkan reliably reports
-    every GPU regardless of vendor), not hardcoded to one vendor, so the
-    exact same code correctly shows CUDA and hides ROCm on an NVIDIA
-    machine. Backend discovery/probing itself (discover_llama_backends,
-    probe_backend_devices) is untouched -- every installed backend is still
-    found and probed; only the returned list is filtered.
+    A backend whose target vendor is positively known to be absent is dropped
+    (e.g. CUDA on a machine where enumeration found only AMD cards) rather
+    than shown as a perpetually-disabled option, since that mismatch can
+    never be fixed by anything the user does here.
+
+    Crucially, this requires POSITIVE evidence of the GPU inventory. If no
+    probe enumerated any device at all, we have learned nothing about what
+    hardware exists and must not conclude a vendor is missing: probes fail
+    for ordinary, temporary reasons -- the GPU is busy serving a model just
+    benchmarked, VRAM is full, a probe timed out. Treating that silence as
+    "no NVIDIA present" made the CUDA backend disappear from the dashboard
+    after a successful run on an NVIDIA laptop, with no way to get it back
+    short of restarting. Absence of evidence is not evidence of absence.
     """
     backends = discover_llama_backends()
     for b in backends:
@@ -338,10 +340,22 @@ def list_llama_backends_with_status() -> list[dict]:
         all_device_names.update(d["name"] for d in b.get("devices", []))
     detected_vendors = _classify_vendors(all_device_names)
 
-    return [
-        b for b in backends
-        if _BACKEND_VENDOR.get(b["id"], "any") == "any" or _BACKEND_VENDOR[b["id"]] in detected_vendors
-    ]
+    # No device seen anywhere -> inventory unknown -> filter nothing.
+    if not all_device_names:
+        return backends
+
+    def keep(b: dict) -> bool:
+        vendor = _BACKEND_VENDOR.get(b["id"], "any")
+        if vendor == "any":
+            return True
+        if vendor in detected_vendors:
+            return True
+        # A backend that enumerated its own devices is self-evidently usable,
+        # even if those device names match no vendor hint (e.g. Intel Arc, or
+        # a card named in a way this heuristic doesn't recognise).
+        return bool(b.get("devices"))
+
+    return [b for b in backends if keep(b)]
 
 
 def is_auxiliary_gguf(filename: str) -> bool:

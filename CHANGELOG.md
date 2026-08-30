@@ -5,6 +5,64 @@ All notable changes to TaskMatch AI are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project uses [semantic versioning](https://semver.org/).
 
+## [0.2.1] — 2026-08-30
+
+Fixes two problems reported from a fresh install on a second machine.
+
+### Fixed
+
+- **A GPU could disappear from the dashboard after a successful run.** When
+  no backend probe managed to enumerate any device — which happens for
+  ordinary, temporary reasons such as the GPU still serving the model just
+  benchmarked, VRAM being full, or a probe timing out — that silence was read
+  as "this vendor's hardware is not present" and the vendor-specific backend
+  (CUDA, ROCm) was removed from the list entirely, with no way to get it back
+  short of a restart. Filtering now requires positive evidence of the GPU
+  inventory: if nothing was enumerated, nothing is filtered. A backend that
+  enumerated its own devices is also always kept, even if the device name
+  matches no known vendor pattern (e.g. Intel Arc).
+- **No way to tell which version was running.** The header showed a hardcoded
+  "PRO v2.5" unrelated to the real version, and `localbench/__init__.py` had
+  drifted to 0.1.0 while `pyproject.toml` said 0.2.0. There is now a single
+  `__version__`, shown in the dashboard header, returned by `/api/version`,
+  and printed by `python cli.py --version`; a test fails if the two files
+  disagree.
+
+- **The dashboard always claimed a model was loaded in LM Studio.** Load
+  state was inferred from `/v1/models`, which lists every *downloaded* model
+  rather than the loaded one, so the first entry was reported as active
+  whenever LM Studio was merely running. That produced a permanent "another
+  model is active — will auto-switch" warning and had users unloading by hand
+  before every run. Load state now comes from LM Studio's own
+  `/api/v0/models`, which carries a real per-model `state` field.
+- **Prefill probes were flagged TRUNCATED.** `hardware_perf` prefill probes
+  set `max_tokens` to 8 on purpose so that timing is dominated by prompt
+  processing, which means they always stop at the limit. Recording and
+  displaying that as truncation made every passing probe look broken. Decode
+  probes, where hitting the cap is meaningful, are unchanged.
+- **The model library looked like several models were already selected.**
+  Models listed in `config.yaml` were pre-selected on load and rendered
+  highlighted, implying a multi-select that no longer exists — a run targets
+  one model, chosen via Configure & Run.
+
+### Changed
+
+- `logic_math` now runs with loop detection enabled, and the runner actually
+  forwards that setting (it previously could not be passed to that suite at
+  all). Evidence: a reasoning model asked "What is 47 + 11 - -14?" spent its
+  full 4096-token budget emitting zero answer characters, its reasoning trace
+  repeating one line verbatim — the same non-convergent pattern the other
+  suites already abort on.
+
+### Added
+
+- Static assets are served as `app.js?v=<version>` / `styles.css?v=<version>`,
+  so an upgraded install cannot keep executing a previous release's cached
+  JavaScript.
+- README documents updating an existing checkout (`git pull`), how to check
+  the running version, and that a wrong version means a second copy of the
+  repo rather than a caching problem.
+
 ## [0.2.0] — 2026-08-30
 
 A large release focused on **measuring the right thing and saying so

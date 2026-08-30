@@ -138,6 +138,35 @@ pip install -r requirements.txt
 python cli.py serve
 ```
 
+On Windows you can instead double-click **`start.bat`**; on macOS/Linux use
+**`./start.sh`**. Both do the same thing as `python cli.py serve`.
+
+### Updating an existing install
+
+An older copy of this repo does **not** update itself. To move an existing
+checkout to the latest version:
+
+```bash
+cd taskmatch-ai
+git pull
+pip install -r requirements.txt   # in case dependencies changed
+python cli.py serve
+```
+
+**Check which version you are actually running** — the dashboard header shows
+it (e.g. `v0.2.0`), and so does:
+
+```bash
+python cli.py --version
+```
+
+If that number is not the release you expect, you are running a *different
+copy of the repo* — the most common cause is having cloned or downloaded it
+twice and starting the wrong folder. Static assets are versioned
+(`app.js?v=<version>`), so a stale browser cache cannot make a new version
+look like an old one; if the header says the old version, the files on disk
+really are the old ones.
+
 That's it — the dashboard opens at `http://localhost:8000`. On first run
 `config.yaml` is created for you from `config.example.yaml`, and everything
 else (runtime URL, which models, which suites) is set from the **Settings**

@@ -588,6 +588,115 @@ class TestLocalbenchCore(unittest.TestCase):
         self.assertEqual(ids, {"rocm", "vulkan", "cpu"})
         self.assertNotIn("cuda", ids)
 
+    def test_logic_math_forwards_detect_loops(self):
+        import inspect
+        from localbench.suites import logic_math_suite
+
+        # The config template enables detect_loops for logic_math on the
+        # evidence of a real 4096-token repetition loop. A config flag the
+        # suite cannot accept would be silently inert -- exactly the kind of
+        # setting that looks configured but does nothing.
+        self.assertIn("detect_loops", inspect.signature(logic_math_suite.run).parameters)
+
+        src = inspect.getsource(logic_math_suite.run)
+        self.assertIn('call_kwargs["detect_loops"]', src)
+
+    def test_hardware_perf_prefill_not_marked_truncated(self):
+        from localbench.suites.hardware_perf_suite import _run_one
+        from localbench.engine import ChatResult
+
+        class FakeCtx:
+            def call(self, messages, **kwargs):
+                # A prefill probe always stops at its tiny max_tokens.
+                # ChatResult.truncated is derived from finish_reason, so
+                # "length" is what makes it truncated.
+                return ChatResult(
+                    success=True, content="OK", finish_reason="length",
+                    latency_seconds=6.4, ttft_seconds=6.3,
+                    prompt_tokens=7080, completion_tokens=8,
+                    requested_max_tokens=8,
+                )
+
+        prefill = _run_one({"id": "prefill_large", "task_type": "prefill", "prompt": "x", "max_tokens": 8}, FakeCtx(), 30)
+        # Truncation is the intended outcome here and carries no information,
+        # so it must not be recorded (it made every passing probe show a
+        # TRUNCATED flag).
+        self.assertFalse(prefill.truncated)
+        self.assertTrue(prefill.passed)
+
+        decode = _run_one({"id": "decode_long", "task_type": "decode", "prompt": "x", "max_tokens": 4096}, FakeCtx(), 30)
+        # Decode probes keep the real value, where hitting the cap is meaningful.
+        self.assertTrue(decode.truncated)
+
+    def test_version_is_single_source_of_truth(self):
+        import re
+        from pathlib import Path
+        from localbench import __version__
+
+        # Three places used to carry a version and two of them drifted:
+        # pyproject said 0.2.0, localbench/__init__ still said 0.1.0, and the
+        # dashboard header showed a hardcoded "PRO v2.5" unrelated to either.
+        # That made "which version am I running?" unanswerable, which is
+        # exactly the confusion this guards against.
+        root = Path(__file__).resolve().parent.parent
+        pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
+        m = re.search(r'^version\s*=\s*"([^"]+)"', pyproject, re.M)
+        self.assertIsNotNone(m, "pyproject.toml must declare a version")
+        self.assertEqual(m.group(1), __version__, "pyproject.toml and localbench.__version__ disagree")
+
+        # The header/asset URLs must be templated, not hardcoded, so the page
+        # always reports the version actually serving it.
+        index_html = (root / "webapp" / "static" / "index.html").read_text(encoding="utf-8")
+        self.assertIn("__APP_VERSION__", index_html)
+        self.assertNotIn("PRO v2.5", index_html)
+
+    def test_list_llama_backends_keeps_all_when_no_devices_enumerated(self):
+        from unittest.mock import patch
+        from localbench.llamacpp_mgr import list_llama_backends_with_status
+
+        fake_backends = [
+            {"id": "cuda", "label": "CUDA", "path": "cuda.exe"},
+            {"id": "rocm", "label": "ROCm", "path": "rocm.exe"},
+            {"id": "vulkan", "label": "Vulkan", "path": "vulkan.exe"},
+            {"id": "cpu", "label": "CPU", "path": "cpu.exe"},
+        ]
+
+        # Every probe fails to enumerate -- the ordinary case when the GPU is
+        # busy serving a model that was just benchmarked, VRAM is full, or a
+        # probe times out. Regression: this was read as "no NVIDIA present"
+        # and deleted the CUDA backend outright, so an NVIDIA laptop lost its
+        # card from the dashboard after one successful run.
+        def probe_empty(path):
+            return {"available": False, "devices": [], "error": "timed out after 15.0s"}
+
+        with patch("localbench.llamacpp_mgr.discover_llama_backends", return_value=[dict(b) for b in fake_backends]), \
+             patch("localbench.llamacpp_mgr.probe_backend_devices", side_effect=probe_empty):
+            ids = {b["id"] for b in list_llama_backends_with_status()}
+
+        self.assertEqual(ids, {"cuda", "rocm", "vulkan", "cpu"})
+
+    def test_list_llama_backends_keeps_backend_that_found_its_own_devices(self):
+        from unittest.mock import patch
+        from localbench.llamacpp_mgr import list_llama_backends_with_status
+
+        fake_backends = [
+            {"id": "cuda", "label": "CUDA", "path": "cuda.exe"},
+            {"id": "vulkan", "label": "Vulkan", "path": "vulkan.exe"},
+        ]
+
+        # A GPU whose name matches no vendor hint (e.g. Intel Arc) must not
+        # cause the backend that successfully enumerated it to be discarded.
+        def probe(path):
+            if path == "cuda.exe":
+                return {"available": True, "devices": [{"name": "Some Unlabelled Accelerator", "id": "d0", "total_mb": 1, "free_mb": 1}], "error": None}
+            return {"available": True, "devices": [{"name": "Some Unlabelled Accelerator", "id": "d0", "total_mb": 1, "free_mb": 1}], "error": None}
+
+        with patch("localbench.llamacpp_mgr.discover_llama_backends", return_value=[dict(b) for b in fake_backends]), \
+             patch("localbench.llamacpp_mgr.probe_backend_devices", side_effect=probe):
+            ids = {b["id"] for b in list_llama_backends_with_status()}
+
+        self.assertIn("cuda", ids)
+
     def test_list_llama_backends_filters_rocm_on_nvidia_only_machine(self):
         from unittest.mock import patch
         from localbench.llamacpp_mgr import list_llama_backends_with_status

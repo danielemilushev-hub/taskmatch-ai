@@ -21,10 +21,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import jsonschema
 import requests
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
-from localbench import report, settings_store, storage
+from localbench import __version__, report, settings_store, storage
 from localbench.config import bootstrap_config, load_config
 from localbench.data.hardware_perf_problems import (
     NUM_PROBLEMS as HARDWARE_PERF_NUM_PROBLEMS,
@@ -79,8 +79,24 @@ class NoCacheStaticFiles(StaticFiles):
 
 
 @app.get("/")
-def index() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html", headers=_NO_CACHE)
+def index() -> HTMLResponse:
+    """Serve the dashboard with the running version stamped into it.
+
+    `__APP_VERSION__` placeholders in index.html become the real version at
+    serve time. That does two things: it shows the version in the header, and
+    it appends ?v=<version> to the JS/CSS so a browser cannot keep serving a
+    previous release's cached assets after an upgrade -- which is exactly how
+    an updated install can appear to still be "the old version".
+    """
+    html_text = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    return HTMLResponse(html_text.replace("__APP_VERSION__", __version__), headers=_NO_CACHE)
+
+
+@app.get("/api/version")
+def get_version() -> dict:
+    """The version actually running, so it can be checked without reading the
+    page source (and so a bug report can state it unambiguously)."""
+    return {"version": __version__}
 
 
 def _hardware_perf_count(config: dict) -> int:
@@ -795,14 +811,29 @@ def get_active_model() -> dict:
     except Exception:
         pass
 
-    # 2. Check LM Studio on port 1234
+    # 2. Check LM Studio on port 1234.
+    #
+    # NOT via /v1/models: LM Studio lists every *downloaded* model there, not
+    # the loaded one(s). Taking data[0] from it reported a model as "active"
+    # whenever LM Studio was merely running, so the dashboard permanently
+    # warned that another model was loaded and users unloaded by hand before
+    # every run for no reason (verified: `lms ps` said nothing was loaded
+    # while /v1/models returned five entries).
+    #
+    # LM Studio's own /api/v0/models carries a per-model `state` field
+    # ("loaded" / "not-loaded"), which is the actual answer.
     try:
-        r = requests.get("http://localhost:1234/v1/models", timeout=0.8)
+        r = requests.get("http://localhost:1234/api/v0/models", timeout=1.5)
         if r.status_code == 200:
-            data = r.json().get("data", [])
-            if data:
-                m_id = data[0].get("id") or data[0].get("name")
+            payload = r.json()
+            entries = payload.get("data", payload if isinstance(payload, list) else [])
+            loaded = [m for m in entries if isinstance(m, dict) and m.get("state") == "loaded"]
+            if loaded:
+                m_id = loaded[0].get("id") or loaded[0].get("name")
                 return {"active": True, "model": m_id, "runtime": "lmstudio", "port": 1234}
+            # Reached LM Studio and it reported nothing loaded -- that is a
+            # definitive answer, so don't fall through to a weaker guess.
+            return {"active": False, "model": None, "runtime": None, "port": None}
     except Exception:
         pass
 

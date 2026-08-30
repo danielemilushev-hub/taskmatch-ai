@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/styles.css">
+<link rel="stylesheet" href="/static/styles.css?v=__APP_VERSION__">
 </head>
 <body>
 <div class="app">
@@ -17,7 +17,7 @@
       <div>
         <div class="row" style="align-items: center; gap: 8px;">
           <h1 style="margin: 0; font-size: 1.55rem; line-height: 1.1;">TaskMatch AI</h1>
-          <span class="model-badge" style="background: rgba(0, 210, 255, 0.12); color: #00d2ff; border: 1px solid rgba(0, 210, 255, 0.35); font-size: 10.5px; font-weight: 700; letter-spacing: 0.04em;">PRO v2.5</span>
+          <span class="model-badge" style="background: rgba(0, 210, 255, 0.12); color: #00d2ff; border: 1px solid rgba(0, 210, 255, 0.35); font-size: 10.5px; font-weight: 700; letter-spacing: 0.04em;" title="Running version. If this does not match the release you expect, you are running a different copy of the repo.">v__APP_VERSION__</span>
         </div>
         <span class="sub" style="margin: 0; display: block; margin-top: 3px;">Workstation-Grade Local LLM Benchmark & Capability Matchmaker</span>
       </div>
@@ -704,6 +704,6 @@
 
 <div class="toast-container" id="toast-container"></div>
 
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v=__APP_VERSION__"></script>
 </body>
 </html>

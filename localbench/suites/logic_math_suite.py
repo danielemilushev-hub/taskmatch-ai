@@ -125,6 +125,7 @@ def run(
     problems: list[dict] | None = None,
     max_tokens: int | None = None,
     call_timeout_seconds: float | None = None,
+    detect_loops: bool = False,
     on_progress: Callable[[int, int, str, bool], None] | None = None,
 ) -> list[ProblemResult]:
     problems = problems if problems is not None else generate_problems(num_problems, seed)
@@ -134,6 +135,8 @@ def run(
         call_kwargs["max_tokens"] = max_tokens
     if call_timeout_seconds is not None:
         call_kwargs["timeout_seconds"] = call_timeout_seconds
+    if detect_loops:
+        call_kwargs["detect_loops"] = True
 
     for idx, problem in enumerate(problems):
         result = _run_one(problem, ctx, call_kwargs)

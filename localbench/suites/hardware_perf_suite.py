@@ -58,7 +58,13 @@ def _run_one(problem: dict, ctx: RunContext, timeout_seconds: float) -> ProblemR
         completion_tokens=chat.completion_tokens,
         prompt=prompt_preview,
         response_content=chat.content,
-        truncated=chat.truncated,
+        # A prefill probe sets max_tokens to 8 on purpose -- stopping at the
+        # limit is the intended outcome, not a fault, and it happens on every
+        # single one. Recording that as `truncated` carried no information and
+        # made a fully passing suite display a TRUNCATED flag on every row.
+        # Decode probes keep the real value, where hitting the cap is
+        # genuinely meaningful.
+        truncated=False if problem.get("task_type") == "prefill" else chat.truncated,
     )
 
 

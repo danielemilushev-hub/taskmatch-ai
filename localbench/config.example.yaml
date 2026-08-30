@@ -132,6 +132,13 @@ suites:
     seed: 42
     max_tokens: 4096
     call_timeout_seconds: 200
+    # Enabled on direct evidence: a reasoning model asked "What is 47 + 11 - -14?"
+    # spent its entire 4096-token budget and emitted zero answer characters,
+    # with the reasoning trace repeating one line verbatim
+    # ("If it were multiplication, it would be ...? No.") over and over. That
+    # is the same non-convergent pattern the other suites already detect, and
+    # it cost ~50s per occurrence while producing nothing gradeable.
+    detect_loops: true
   instruction_following:
     enabled: true
     num_problems: 24

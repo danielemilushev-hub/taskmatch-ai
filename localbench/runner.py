@@ -501,6 +501,7 @@ def run_benchmark(
                     seed=logic_math_cfg.get("seed", 42),
                     max_tokens=logic_math_cfg.get("max_tokens"),
                     call_timeout_seconds=logic_math_cfg.get("call_timeout_seconds"),
+                    detect_loops=logic_math_cfg.get("detect_loops", False),
                     on_progress=_make_progress_logger(log, model_name, should_cancel=should_cancel, on_stats=on_stats, suite_name="logic_math"),
                 )
             model_result.suites["logic_math"] = SuiteRunResult(

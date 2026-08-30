@@ -21,6 +21,19 @@ const state = {
 // null when no VRAM could be detected, so callers must null-check rather than
 // silently comparing against a wrong default -- guessing a size here would
 // mislabel which models "fit" on an unknown machine.
+/**
+ * True for hardware_perf's prefill probes, where truncation is the *intended*
+ * outcome rather than a fault.
+ *
+ * Those probes deliberately set max_tokens to 8 so that time-to-first-token
+ * is dominated by prompt processing rather than generation, which means they
+ * always stop on finish_reason=length. Flagging that as "TRUNCATED" made
+ * every passing prefill probe look like something had gone wrong.
+ */
+function isPrefillProbeId(problemId) {
+  return typeof problemId === "string" && problemId.startsWith("prefill_");
+}
+
 function vramPrimaryGB() {
   return state.vram ? state.vram.primaryGB : null;
 }
@@ -1490,12 +1503,12 @@ async function loadConfig() {
     if (data.models && data.models.length) {
       // ONLY show verified physical models that exist on disk or active runtime
       modelList = data.models;
-      const detectedSet = new Set(data.models);
-      // Pre-select configured models if they physically exist
-      configModels.filter((m) => detectedSet.has(m)).forEach((m) => state.selectedModels.add(m));
-      if (state.selectedModels.size === 0 && data.models.length > 0) {
-        state.selectedModels.add(data.models[0]);
-      }
+      // Deliberately NOT pre-selecting anything. Models listed in config.yaml
+      // used to be added to state.selectedModels here, which highlighted those
+      // cards on load and made the library look like a multi-select where
+      // several models were already chosen. Since the redesign a run targets
+      // exactly one model, picked by opening its card -> Configure & Run, so a
+      // standing "selection" had no meaning and only caused confusion.
       if (detectStatus) {
         detectStatus.textContent = `Found ${data.models.length} verified model(s) on disk & runtime`;
       }
@@ -2739,7 +2752,7 @@ function renderRunDetail(data, suiteFilterVal, modelFilterVal) {
       const gpuUtil = safeGpuUtil(resource.peak_gpu_util_percent);
       const pillClass = suite.pass_rate >= 0.7 ? "pass" : "fail";
       const icon = suite.pass_rate >= 0.7 ? "✓" : "✗";
-      const truncatedCount = (suite.problems || []).filter((p) => p.truncated).length;
+      const truncatedCount = (suite.problems || []).filter((p) => p.truncated && !isPrefillProbeId(p.problem_id)).length;
       const truncatedBadge = truncatedCount > 0
         ? `<span class="truncated-badge" title="${truncatedCount} of ${suite.total} failure(s) hit the max_tokens limit before finishing -- counted as failures, but may reflect too small a token budget rather than incorrect reasoning. Click the pill to inspect.">&#9888; ${truncatedCount} truncated</span>`
         : "";
@@ -2862,7 +2875,7 @@ function showInspectorModal(runData, modelName, suiteName, filterState = "all") 
       <span>TTFT: ${fmtNum(p.ttft_seconds)}s</span>
       <span>Tokens/sec: ${fmtNum(p.tokens_per_sec)}</span>
       ${p.prefill_tokens_per_sec != null ? `<span title="Prompt tokens processed per second (prompt_tokens / TTFT) -- prefill throughput, distinct from decode speed above.">Prefill tok/s: ${fmtNum(p.prefill_tokens_per_sec)}</span>` : ""}
-      ${p.truncated ? '<span style="color:var(--serious)">TRUNCATED</span>' : ""}
+      ${p.truncated && !isPrefillProbeId(p.problem_id) ? '<span style="color:var(--serious)">TRUNCATED</span>' : ""}
       ${p.loop_detected ? '<span style="color:var(--critical)">LOOP DETECTED</span>' : ""}
       ${p.early_exit ? '<span style="color:var(--good)" title="A correct, already-verified answer was found in the stream, but the model never stopped talking on its own -- generation was cut off there instead of waiting out max_tokens.">SOLVED, DID NOT TERMINATE</span>' : ""}
     `;
@@ -4234,7 +4247,7 @@ function buildFullComparisonTable(series, categories, getSuite, runs) {
     ciEl.textContent = "95% CI " + ciLabel(r.suiteData);
     ciEl.title = ciTitle(r.suiteData);
     tdPass.appendChild(ciEl);
-    const truncatedCount = (r.suiteData.problems || []).filter((p) => p.truncated).length;
+    const truncatedCount = (r.suiteData.problems || []).filter((p) => p.truncated && !isPrefillProbeId(p.problem_id)).length;
     if (truncatedCount > 0) {
       const truncBadge = document.createElement("span");
       truncBadge.className = "truncated-badge";

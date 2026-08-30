@@ -12,7 +12,7 @@ import sys
 import webbrowser
 from pathlib import Path
 
-from localbench import report
+from localbench import __version__, report
 from localbench.config import bootstrap_config, load_config
 from localbench.runner import run_benchmark
 
@@ -152,6 +152,10 @@ def main() -> None:
     _make_stdout_unicode_safe()
 
     parser = argparse.ArgumentParser(prog="taskmatch", description="TaskMatch AI — Task-driven evaluation for local LLMs.")
+    # Lets you confirm which version a given checkout actually is, without
+    # starting the server -- useful when more than one copy of the repo
+    # exists on a machine.
+    parser.add_argument("--version", action="version", version=f"TaskMatch AI {__version__}")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     run_parser = subparsers.add_parser("run", help="run benchmark suites from the terminal")
