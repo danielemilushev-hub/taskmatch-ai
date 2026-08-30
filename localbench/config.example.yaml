@@ -5,19 +5,33 @@
 # server, vLLM, etc). Point base_url at yours.
 
 runtime:
-  base_url: "http://localhost:1234/v1"
+  # Default port by runtime: llama.cpp 8080, LM Studio 1234, Ollama 11434,
+  # vLLM 8000. Change this (or pick a preset in the dashboard's Settings tab)
+  # to match whichever server you actually run.
+  base_url: "http://localhost:8080/v1"
+  # Which local server this is: llamacpp | lmstudio | ollama | vllm.
+  # Only "llamacpp" is driven directly by this app (it discovers the
+  # llama-server binary, picks the compute backend, and selects GPUs for you);
+  # for the others you load the model in that app yourself and this just
+  # connects to it.
+  runtime_flavor: "llamacpp"
   api_key: "not-needed"        # sent as a Bearer token; most local servers ignore it
   request_timeout_seconds: 120
   # Run once before switching to ANY model, to guarantee a clean slate.
   # Needed because some runtimes (e.g. LM Studio's `lms load`) will happily
   # stack a second instance of a model that's already loaded instead of
   # reusing it, silently wasting VRAM. Leave null if not applicable.
-  unload_all_cmd: "lms unload --all"
+  unload_all_cmd: null
 
 # Models to benchmark, in order. The benchmark runs strictly sequentially:
 # one model is loaded, fully benchmarked across all enabled suites, then
-# unloaded before the next one is loaded. This is deliberate — these are
+# unloaded before the next one is loaded. This is deliberate -- these are
 # large models on limited VRAM and must never run concurrently.
+#
+# You normally do NOT need to edit this list by hand: the dashboard detects
+# what's actually installed on your machine and lets you pick per model. The
+# entries below are illustrative examples of the available options, using
+# placeholder names that almost certainly do not exist on your disk.
 #
 # For each model, "switch" tells localbench how to load/unload it:
 #   - load_cmd / unload_cmd: a shell command run before/after benchmarking
@@ -25,20 +39,27 @@ runtime:
 #     placeholder for the model name if needed.
 #   - if switch is omitted (or load_cmd is null), localbench pauses and
 #     prints "Load model X in your runtime, then press Enter" instead of
-#     running anything — use this for Ollama/llama.cpp or manual control.
+#     running anything -- use this for Ollama/llama.cpp or manual control.
 models:
-  - name: "google/gemma-4-12b-qat"
-    switch:
-      load_cmd: 'lms load "{model}" -y --gpu max'
-      unload_cmd: "lms unload --all"
+  # A llama.cpp model: this app launches llama-server itself, so the engine
+  # tuning below is applied directly to the launch command.
+  - name: "REPLACE-WITH-YOUR-MODEL.gguf"
+    runtime_flavor: "llamacpp"
+    context_length: 32768
+    gpu_kv: "q8_0"
+    flash_attention: true
+    batch_size: 2048
+    split_mode: "layer"
 
-  - name: "qwen/qwen3-coder-30b"
-    switch:
-      load_cmd: 'lms load "{model}" -y --gpu max'
-      unload_cmd: "lms unload --all"
+  # An LM Studio model, loaded via its CLI before benchmarking:
+  # - name: "qwen/qwen3-coder-30b"
+  #   runtime_flavor: "lmstudio"
+  #   switch:
+  #     load_cmd: 'lms load "{model}" -y --gpu max'
+  #     unload_cmd: "lms unload --all"
 
-  # Example of a model benchmarked with manual switching (e.g. if you run
-  # it in Ollama instead): just omit `switch` entirely.
+  # A model you load manually yourself (e.g. in Ollama): omit `switch`
+  # entirely and the run pauses to let you load it.
   # - name: "llama3:8b"
 
 # Per-suite max_tokens overrides the global sampling.max_tokens below.

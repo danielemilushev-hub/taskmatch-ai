@@ -44,6 +44,7 @@
     </button>
     <button data-view="history">📊 History & Analytics</button>
     <button data-view="compare">⚔️ Model Arena</button>
+    <button data-view="hardware">🖥️ Hardware Bench</button>
     <button data-view="playground">🧪 Playground & Lab</button>
     <button data-view="settings">⚙️ Settings & Engine</button>
   </nav>
@@ -71,8 +72,11 @@
         <!-- Quick Filter Pills -->
         <div class="filter-pills-bar" id="model-filter-pills">
           <div class="filter-pill active" data-filter="all">All Models <span class="pill-count" id="pill-count-all">0</span></div>
-          <div class="filter-pill" data-filter="gpu1">⚡ Fits RX 7800 XT (16GB) <span class="pill-count" id="pill-count-gpu1">0</span></div>
-          <div class="filter-pill" data-filter="dual">🔥 Dual GPU (24GB) <span class="pill-count" id="pill-count-dual">0</span></div>
+          <!-- Labels/visibility are rewritten from this machine's real VRAM by
+               updateVramFilterPills(); hidden until then so no other user sees
+               the development machine's GPU names. -->
+          <div class="filter-pill" data-filter="gpu1" style="display:none;">⚡ Fits GPU <span class="pill-count" id="pill-count-gpu1">0</span></div>
+          <div class="filter-pill" data-filter="dual" style="display:none;">🔥 All GPUs <span class="pill-count" id="pill-count-dual">0</span></div>
           <div class="filter-pill" data-filter="gguf">📁 Local GGUFs <span class="pill-count" id="pill-count-gguf">0</span></div>
         </div>
 
@@ -116,21 +120,27 @@
           <!-- GPU Device Selection (comes first: which hardware to use gates which
                Compute Backend options make sense, e.g. ROCm can't combine 2 GPUs) -->
           <div id="modal-gpu-devices-wrap" style="display:none;">
-            <label style="font-size:11.5px; font-weight:600; text-transform:uppercase; letter-spacing:0.5px; color:var(--text-muted); display:block; margin-bottom:6px;">GPU(s) to Use</label>
-            <div id="modal-gpu-devices" class="model-settings-chips"></div>
-            <em id="modal-gpu-devices-hint" style="font-size:10.5px; color:var(--text-muted); display:block; margin-top:4px;"></em>
+            <div class="row" style="justify-content:space-between; align-items:center; margin-bottom:8px;">
+              <label style="font-size:11.5px; font-weight:600; text-transform:uppercase; letter-spacing:0.5px; color:var(--text-muted); margin:0;" id="modal-gpu-devices-title">GPU(s) Detected</label>
+              <div id="modal-gpu-strategy-wrap" style="display:none; align-items:center; gap:8px;">
+                <label style="font-size:11px; color:var(--text-muted); margin:0;">Multi-GPU Strategy</label>
+                <select id="modal-cfg-split" style="font-size:11.5px; padding:3px 8px;">
+                  <option value="layer">Split evenly (layer)</option>
+                  <option value="row">Row split</option>
+                  <option value="none">Main GPU only (no split)</option>
+                </select>
+              </div>
+            </div>
+            <div id="modal-gpu-devices" style="display:flex; flex-direction:column; gap:8px;"></div>
+            <em id="modal-gpu-devices-hint" style="font-size:10.5px; color:var(--text-muted); display:block; margin-top:6px;"></em>
           </div>
 
           <!-- Settings Grid (2 Columns) -->
           <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:12px;">
             <div class="model-settings-col">
               <label>Runtime Engine</label>
-              <select id="modal-cfg-engine">
-                <option value="llamacpp">llama.cpp (server) — Fast Vulkan</option>
-                <option value="lmstudio">LM Studio (local server)</option>
-                <option value="ollama">Ollama</option>
-                <option value="vllm">vLLM</option>
-              </select>
+              <select id="modal-cfg-engine" disabled></select>
+              <em style="font-size:10.5px; color:var(--text-muted); display:block; margin-top:3px;">Set globally in <a href="#" data-view-link="settings">Settings &amp; Engine</a> — only one local server runs at a time.</em>
             </div>
             <div class="model-settings-col" id="modal-backend-col">
               <label>Compute Backend</label>
@@ -142,7 +152,7 @@
             <div class="model-settings-col">
               <label>GPU / VRAM Offload</label>
               <select id="modal-cfg-gpu">
-                <option value="max">Max (100% VRAM Dual GPU)</option>
+                <option value="max">Max (100% VRAM)</option>
                 <option value="0.75">75% Offload</option>
                 <option value="0.5">50% Offload</option>
                 <option value="off">CPU Only (0%)</option>
@@ -233,10 +243,11 @@
         </div>
 
         <div class="model-config-footer">
-          <div class="row" style="gap:8px;">
-            <button type="button" class="secondary small" id="modal-btn-load">▶️ Load Model</button>
-            <button type="button" class="secondary small" id="modal-btn-launch">🖥️ Launch in Terminal</button>
-            <button type="button" class="secondary small" id="modal-btn-unload" style="color:#ef4444; border-color:rgba(239,68,68,0.4);">⏹️ Unload</button>
+          <div class="row" style="gap:8px; align-items:center;">
+            <span style="font-size:11px; color:var(--text-muted);" title="Loading first is optional. Start Benchmark loads the model itself, and reuses an already-loaded one instead of reloading it.">Optional pre-load:</span>
+            <button type="button" class="secondary small" id="modal-btn-load" title="Optional. Start the server now in the background so you can check it loads. Start Benchmark will reuse it — the model is not loaded twice.">▶️ Load Now</button>
+            <button type="button" class="secondary small" id="modal-btn-launch" title="Optional. Same as Load Now, but in a visible terminal window so you can watch llama.cpp's own output — useful when a model fails to load.">🖥️ Load in Terminal</button>
+            <button type="button" class="secondary small" id="modal-btn-unload" style="color:#ef4444; border-color:rgba(239,68,68,0.4);" title="Stop the server and free VRAM.">⏹️ Unload</button>
           </div>
           <div class="row" style="gap:10px; align-items:center;">
             <span id="modal-action-status" style="font-size:12px; color:var(--text-muted);"></span>
@@ -254,7 +265,7 @@
           <button class="secondary small" id="btn-back-to-models">← Back to Model Library</button>
           <div class="row" style="gap:8px; align-items:center;">
             <span class="pulse-dot" style="display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--good); box-shadow:0 0 8px var(--good); animation: pulse 1.5s infinite;"></span>
-            <span id="stage-engine-badge" class="model-badge" style="background:var(--page); border:1px solid var(--accent); color:var(--accent); font-weight:600;">llama.cpp Vulkan (Dual GPU)</span>
+            <span id="stage-engine-badge" class="model-badge" style="background:var(--page); border:1px solid var(--accent); color:var(--accent); font-weight:600;">Engine</span>
             <button class="secondary small" id="stop-run" style="color:#ef4444; border-color:rgba(239,68,68,0.4); font-weight:600;">⏹️ Stop Run</button>
           </div>
         </div>
@@ -267,9 +278,19 @@
               <span>Loading engine parameters...</span>
             </div>
           </div>
+          <!-- Prefill and decode are shown side by side, not swapped: they
+               measure different things (prompt processing vs generation) and
+               a prefill probe's decode rate is structurally meaningless, so
+               showing only one at a time hid whichever number actually
+               mattered for the task in flight. Each keeps its last real
+               reading, so both stay meaningful across task types. -->
           <div class="row" style="gap:10px; flex-wrap:wrap;">
             <div style="text-align:right;">
-              <div style="font-size:11px; color:var(--text-muted);">Generation Speed</div>
+              <div style="font-size:11px; color:var(--text-muted);" id="stage-prefill-label">Prefill Speed</div>
+              <div style="font-size:18px; font-weight:700; color:#a78bfa;" id="stage-prefill-sec">⚡ -- tok/s</div>
+            </div>
+            <div style="text-align:right; border-left:1px solid var(--border); padding-left:10px;">
+              <div style="font-size:11px; color:var(--text-muted);" id="stage-tok-label">Generation Speed</div>
               <div style="font-size:18px; font-weight:700; color:#60a5fa;" id="stage-tok-sec">⚡ -- tok/s</div>
             </div>
             <div style="text-align:right; border-left:1px solid var(--border); padding-left:10px;">
@@ -292,16 +313,19 @@
             <span id="stage-task-count">Task 0 of 0</span>
             <span id="stage-status-detail">Streaming output & calculating accuracy</span>
           </div>
+          <!-- Populated by showRunFinishedActions() once a run ends. -->
+          <div class="row" id="run-finished-actions" style="display:none; gap:10px; margin-top:12px;"></div>
         </div>
 
         <!-- Real-Time Hardware Telemetry -->
         <div style="padding:14px; background:var(--page); border:1px solid var(--border); border-radius:10px;">
           <div class="row" style="justify-content:space-between; align-items:center; margin-bottom:10px;">
             <h3 style="margin:0; font-size:13px; display:flex; align-items:center; gap:6px;">
-              <span>📊 Real-Time Dual GPU & System Hardware Telemetry</span>
+              <span>📊 Real-Time GPU &amp; System Hardware Telemetry</span>
               <span class="pulse-dot" style="display:inline-block; width:7px; height:7px; border-radius:50%; background:var(--good); box-shadow:0 0 6px var(--good);"></span>
             </h3>
-            <span class="muted" style="font-size:11px;">RX 7800 XT (16GB) + RX 6650 XT (8GB)</span>
+            <!-- Filled in from this machine's detected GPUs by loadHardwareSpecs(). -->
+            <span class="muted" style="font-size:11px;" id="telemetry-gpu-summary"></span>
           </div>
           <div class="live-monitor-grid" id="live-monitor-grid"></div>
         </div>
@@ -392,6 +416,27 @@
       <div class="compare-grid" id="compare-run-picker"></div>
     </div>
     <div id="compare-output"></div>
+  </section>
+
+  <!-- HARDWARE BENCH -->
+  <section id="view-hardware" class="view">
+    <div class="card">
+      <div class="row" style="justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 6px;">
+        <div>
+          <h2 style="margin:0;">Hardware Bench</h2>
+          <p class="muted" style="margin:4px 0 0 0; font-size:12.5px;">Raw speed comparison across models on this hardware — prefill throughput, decode speed, and time-to-first-token from the <code>hardware_perf</code> suite. Not a quality/accuracy comparison (see Model Arena for that); a model that scores badly here can still be a great model, and vice versa.</p>
+        </div>
+        <div class="row" style="gap:8px; align-items:center;">
+          <label for="hardware-sort" style="font-size:11.5px; color:var(--text-muted);">Sort</label>
+          <select id="hardware-sort" style="font-size:11.5px; padding:4px 8px;">
+            <option value="date">Newest first</option>
+            <option value="speed">Fastest decode first</option>
+          </select>
+          <button class="secondary small" id="hardware-compare-refresh">🔄 Refresh</button>
+        </div>
+      </div>
+      <div id="hardware-compare-output" style="margin-top:14px;"></div>
+    </div>
   </section>
 
   <!-- PLAYGROUND -->
@@ -499,12 +544,14 @@
           <p class="muted">Configure which local OpenAI-compatible inference server TaskMatch AI connects to.</p>
           
           <label class="field">Quick Server Presets</label>
-          <div class="row" style="gap:8px; margin-bottom:12px; flex-wrap: wrap;">
-            <button class="secondary small" data-preset-url="http://localhost:1234/v1" data-preset-unload="lms unload --all">🔵 LM Studio (:1234)</button>
-            <button class="secondary small" data-preset-url="http://localhost:11434/v1" data-preset-unload="ollama stop">🦙 Ollama (:11434)</button>
-            <button class="secondary small" data-preset-url="http://localhost:8080/v1" data-preset-unload="">⚡ llama.cpp (:8080)</button>
-            <button class="secondary small" data-preset-url="http://localhost:8000/v1" data-preset-unload="">🚀 vLLM (:8000)</button>
+          <div class="row" style="gap:8px; margin-bottom:8px; flex-wrap: wrap;">
+            <button class="secondary small" data-preset-url="http://localhost:1234/v1" data-preset-unload="lms unload --all" data-preset-flavor="lmstudio">🔵 LM Studio (:1234)</button>
+            <button class="secondary small" data-preset-url="http://localhost:11434/v1" data-preset-unload="ollama stop" data-preset-flavor="ollama">🦙 Ollama (:11434)</button>
+            <button class="secondary small" data-preset-url="http://localhost:8080/v1" data-preset-unload="" data-preset-flavor="llamacpp">⚡ llama.cpp (:8080)</button>
+            <button class="secondary small" data-preset-url="http://localhost:8000/v1" data-preset-unload="" data-preset-flavor="vllm">🚀 vLLM (:8000)</button>
           </div>
+          <input type="hidden" id="settings-runtime-flavor" value="llamacpp">
+          <p class="muted" style="margin:0 0 12px 0; font-size:12px;">Active engine: <strong id="settings-active-engine-label" style="color:var(--text);">llama.cpp</strong> — this is the single engine every model run uses. Selecting a preset above also sets this; for llama.cpp, TaskMatch AI controls the compute backend (Vulkan/ROCm/CUDA) and GPU selection directly (see the model's Configure &amp; Run panel). For the others, load the model in that app yourself — TaskMatch AI just connects and runs the suites once it's ready.</p>
 
           <label class="field">Base URL</label>
           <input type="text" id="settings-base-url" placeholder="http://localhost:1234/v1">

@@ -55,16 +55,59 @@ _FILLER_SENTENCES = [
     "User interfaces should be intuitive even for people unfamiliar with the system.",
 ]
 
-# (problem id, approximate target word count). English prose averages
-# roughly 0.75 words per token, so these targets land near 200/1,000/4,000/
-# 8,000 tokens -- the real prompt_tokens value from the API is what actually
-# gets recorded and compared, not this estimate.
+# (problem id, approximate target word count, approximate token count).
+# English prose averages roughly 0.75 words per token, so these targets land
+# near 200/1k/4k/8k/16k/32k tokens -- the real prompt_tokens value from the
+# API is what actually gets recorded and compared, not this estimate.
+#
+# The 16k and 32k tiers exist because prefill throughput keeps climbing well
+# past 8k on capable hardware (a live run went 85 -> 860 tok/s between 200
+# and 7k tokens and had clearly not plateaued), so stopping at 8k measured
+# the ramp but never found the ceiling. They are skipped automatically when
+# they wouldn't fit the model's configured context window -- see
+# tiers_for_context().
 _PREFILL_TIERS = [
-    ("prefill_tiny", 150),
-    ("prefill_small", 750),
-    ("prefill_medium", 3000),
-    ("prefill_large", 6000),
+    ("prefill_tiny", 150, 200),
+    ("prefill_small", 750, 1_000),
+    ("prefill_medium", 3_000, 4_000),
+    ("prefill_large", 6_000, 8_000),
+    ("prefill_xl", 12_000, 16_000),
+    ("prefill_xxl", 24_000, 32_000),
 ]
+
+# Prefill probes generate only this many tokens -- the point is to time
+# prompt processing, not generation.
+_PREFILL_MAX_TOKENS = 8
+
+# Token-count estimates from word counts are tokenizer-dependent and can run
+# over, so a tier is only included when it fits the context window with room
+# to spare. Overflowing the window doesn't produce a slow-but-valid
+# measurement, it produces a failed call or a silently truncated prompt --
+# either of which would be a meaningless data point.
+_CONTEXT_SAFETY_FACTOR = 1.20
+
+
+def tiers_for_context(max_context_tokens: int | None) -> list[tuple[str, int, int]]:
+    """Prefill tiers that fit within `max_context_tokens`.
+
+    None means "no known limit" -- every tier is used. This is what keeps the
+    big new tiers from breaking small-context setups: a model configured with
+    an 8k window simply runs the tiers up to 8k and skips the rest, instead
+    of failing two probes.
+    """
+    if not max_context_tokens:
+        return list(_PREFILL_TIERS)
+    return [
+        tier for tier in _PREFILL_TIERS
+        if tier[2] * _CONTEXT_SAFETY_FACTOR + _PREFILL_MAX_TOKENS <= max_context_tokens
+    ]
+
+
+def num_problems_for_context(max_context_tokens: int | None) -> int:
+    """How many problems this suite will actually run for a given context
+    window -- so task counts shown in the UI match reality rather than
+    assuming every tier always runs."""
+    return len(tiers_for_context(max_context_tokens)) + len(_DECODE_TIERS)
 
 # (problem id, max_tokens). A short prompt, so prefill contributes almost
 # nothing to the timing -- this isolates decode speed.
@@ -73,10 +116,11 @@ _DECODE_TIERS = [
     ("decode_long", 4096),
 ]
 
-# Single source of truth for "how many problems does this suite run" --
-# used wherever the task count needs reporting (e.g. the New Run page's
-# task-count summary) without duplicating this suite's fixed shape as a
-# magic number elsewhere.
+# Single source of truth for "how many problems does this suite run" at an
+# unrestricted context window -- used wherever the task count needs
+# reporting without duplicating this suite's shape as a magic number.
+# Use num_problems_for_context() when the model's context window is known,
+# since the largest prefill tiers are skipped if they wouldn't fit.
 NUM_PROBLEMS = len(_PREFILL_TIERS) + len(_DECODE_TIERS)
 
 _DECODE_PROMPT = (
@@ -97,22 +141,27 @@ def _build_filler_text(rng: random.Random, target_words: int) -> str:
     return " ".join(sentences)
 
 
-def generate_problems(seed: int = 42) -> list[dict]:
+def generate_problems(seed: int = 42, max_context_tokens: int | None = None) -> list[dict]:
     """Fixed set, deliberately not scaled by Quick/Full profile -- this
     suite characterizes hardware, it isn't a statistically-sampled accuracy
     measurement, so there's no notion of "fewer samples for a faster
-    baseline" the way the other suites have."""
+    baseline" the way the other suites have.
+
+    `max_context_tokens` only ever removes tiers that physically cannot fit
+    the model's context window; it never scales the set for speed.
+    """
     rng = random.Random(seed)
     problems: list[dict] = []
 
-    for pid, target_words in _PREFILL_TIERS:
+    for pid, target_words, est_tokens in tiers_for_context(max_context_tokens):
         filler = _build_filler_text(rng, target_words)
         problems.append(
             {
                 "id": pid,
                 "task_type": "prefill",
                 "prompt": f"{filler}\n\nReply with only the single word: OK",
-                "max_tokens": 8,
+                "max_tokens": _PREFILL_MAX_TOKENS,
+                "est_prompt_tokens": est_tokens,
             }
         )
 

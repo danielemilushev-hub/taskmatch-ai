@@ -25,14 +25,27 @@ from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 from localbench import report, settings_store, storage
-from localbench.config import load_config
-from localbench.data.hardware_perf_problems import NUM_PROBLEMS as HARDWARE_PERF_NUM_PROBLEMS
+from localbench.config import bootstrap_config, load_config
+from localbench.data.hardware_perf_problems import (
+    NUM_PROBLEMS as HARDWARE_PERF_NUM_PROBLEMS,
+    num_problems_for_context as hardware_perf_count_for_context,
+)
 from localbench.profiles import DEFAULT_PROFILE, PROFILES, problems_for
 from localbench.engine import RunContext
 from localbench.json_extract import extract_json
 from webapp.run_manager import RunManager
 
 app = FastAPI(title="TaskMatch AI dashboard")
+
+# config.yaml is gitignored, so a fresh clone doesn't have one until it's
+# created from the template. `cli.py serve` bootstraps it before starting
+# uvicorn, but this module is also documented (see the docstring above) as
+# being launchable directly via `uvicorn webapp.main:app` -- and since the
+# line below runs at import time, that path used to die with
+# FileNotFoundError on any fresh clone. Bootstrapping here as well makes both
+# documented entry points work identically. It's a no-op when config.yaml
+# already exists, so it never overwrites a real config.
+bootstrap_config()
 run_manager = RunManager(results_dir=load_config().get("output", {}).get("results_dir", "results"))
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -70,9 +83,20 @@ def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html", headers=_NO_CACHE)
 
 
+def _hardware_perf_count(config: dict) -> int:
+    """hardware_perf's task count depends on the configured context window --
+    its largest prefill tiers are skipped when they wouldn't fit, so a fixed
+    number would promise probes that never run."""
+    models = config.get("models") or []
+    ctx_values = [m.get("context_length") for m in models if isinstance(m, dict) and m.get("context_length")]
+    # Smallest configured window: the count must not overstate what the
+    # narrowest model in the run will actually execute.
+    return hardware_perf_count_for_context(min(ctx_values) if ctx_values else None)
+
+
 def _get_suite_task_count(name: str, config: dict) -> int:
     if name == "hardware_perf":
-        return HARDWARE_PERF_NUM_PROBLEMS
+        return _hardware_perf_count(config)
     s_cfg = config.get("suites", {}).get(name, {})
     count = problems_for(name, "full", s_cfg.get("num_problems"))
     if count is not None:
@@ -87,7 +111,7 @@ def _suite_profile_count(name: str, profile: str, config: dict) -> int | None:
     # problems_for()'s generic quick-profile halving would otherwise
     # misreport this suite's actual (unchanging) task count.
     if name == "hardware_perf":
-        return HARDWARE_PERF_NUM_PROBLEMS
+        return _hardware_perf_count(config)
     return problems_for(
         name, profile, config.get("suites", {}).get(name, {}).get("num_problems")
     )
@@ -133,6 +157,58 @@ def get_live_hardware_telemetry() -> dict:
         return get_instant_hardware_sample()
     except Exception as e:
         return {"error": str(e)}
+
+
+@app.get("/api/hardware/compare")
+def get_hardware_compare() -> dict:
+    """Aggregate hardware_perf suite results across saved runs into a
+    raw-speed comparison -- deliberately separate from the accuracy-focused
+    Compare Studio (view-compare), since hardware_perf measures how a model
+    *runs* on this hardware (prefill/decode throughput, time-to-first-token),
+    not how good its answers are.
+
+    Every hardware_perf run is returned, newest first -- NOT just the latest
+    per model. Keeping only the latest silently destroyed the most useful
+    comparison this view exists for: re-running one model on a different
+    compute backend or GPU selection replaced its previous result instead of
+    sitting beside it, so a ROCm-vs-Vulkan or 1-GPU-vs-2-GPU comparison of
+    the same model was impossible. Each row already carries its own
+    timestamp, backend and GPU attribution, so repeated runs of one model are
+    distinguishable rather than confusing.
+    """
+    config = load_config()
+    results_dir = Path(config.get("output", {}).get("results_dir", "results"))
+    runs_dir = results_dir / "runs"
+    if not runs_dir.exists():
+        return {"entries": []}
+
+    entries: list[dict] = []
+    for path in sorted(runs_dir.glob("*.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        run_id = data.get("run_id", path.stem)
+        for model_name, model_result in (data.get("models") or {}).items():
+            suite = (model_result.get("suites") or {}).get("hardware_perf")
+            if not suite or not suite.get("problems"):
+                continue
+            problems = {p["problem_id"]: p for p in suite["problems"] if p.get("passed")}
+            if not problems:
+                continue
+            entries.append({
+                "run_id": run_id,
+                "started_at": data.get("started_at"),
+                "model": model_name,
+                "hardware": data.get("hardware", {}),
+                "runtime_load_info": model_result.get("runtime_load_info"),
+                "problems": problems,
+            })
+
+    # Newest first. started_at is an ISO timestamp so it sorts lexically; fall
+    # back to run_id (also timestamp-prefixed) when it's missing.
+    entries.sort(key=lambda e: (e.get("started_at") or e.get("run_id") or ""), reverse=True)
+    return {"entries": entries}
 
 
 @app.get("/api/models/detect")
@@ -250,7 +326,7 @@ def models_catalog() -> dict:
 
 @app.get("/api/settings/directories")
 def get_directories() -> dict:
-    from localbench import settings_store
+    from localbench import llamacpp_mgr, settings_store
     dirs = settings_store.get_model_directories()
     stats = []
     for d in dirs:
@@ -258,7 +334,10 @@ def get_directories() -> dict:
         if os.path.isdir(d):
             try:
                 for root, _, files in os.walk(d):
-                    count += sum(1 for f in files if f.lower().endswith(".gguf") and not f.lower().startswith("mmproj"))
+                    count += sum(
+                        1 for f in files
+                        if f.lower().endswith(".gguf") and not llamacpp_mgr.is_auxiliary_gguf(f)
+                    )
             except Exception:
                 pass
         stats.append({"path": d, "exists": os.path.isdir(d), "gguf_count": count})
@@ -442,6 +521,26 @@ def set_settings_key(payload: dict) -> dict:
     except ValueError as e:
         raise HTTPException(400, str(e))
     return {"ok": True, "keys": settings_store.key_status()}
+
+
+@app.post("/api/settings/keys/{provider}/test")
+def test_settings_key(provider: str) -> dict:
+    """Check that a stored key is actually accepted by its provider.
+
+    A key being *present* is not the same as it being *valid*: a revoked or
+    mistyped key still shows as "Set", and the only way to find out was to
+    start a paid run and watch every task fail with a 401 (observed live --
+    a whole 7-task frontier run wasted on 'User not found'). This asks the
+    provider directly, using the cheapest read-only endpoint each one offers,
+    so nothing is generated and nothing is billed.
+
+    The key itself is never returned or logged -- only whether it works.
+    """
+    try:
+        result = settings_store.verify_api_key(provider)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return result
 
 
 @app.delete("/api/settings/keys/{provider}")

@@ -219,6 +219,54 @@ class TestLocalbenchCore(unittest.TestCase):
         self.assertIn("-sm row", cmd)
         self.assertIn("-b 2048", cmd)
 
+    def test_switch_to_model_threads_backend_selection_through_to_launch(self):
+        from unittest.mock import patch
+        from localbench.runner import _switch_to_model
+
+        model_cfg = {
+            "name": "GLM-4.6V-Flash-Q4_K_M",
+            "runtime_flavor": "llamacpp",
+            "backend": "rocm",
+            "devices": ["ROCm0"],
+        }
+
+        # is_model_already_serving is patched explicitly: unpatched it makes a
+        # real HTTP call to localhost:8080, so whether this test passed
+        # depended on whether a llama-server happened to be running on the
+        # machine -- which made it fail spuriously mid-session.
+        with patch("localbench.llamacpp_mgr.launch_llama_server", return_value=(True, "ok")) as mock_launch, \
+             patch("localbench.llamacpp_mgr.wait_for_server_ready", return_value=True), \
+             patch("localbench.llamacpp_mgr.find_model_gguf", return_value=r"C:\models\glm.gguf"), \
+             patch("localbench.llamacpp_mgr.is_model_already_serving", return_value=False):
+            _switch_to_model(model_cfg, base_url="http://localhost:8080/v1", unload_all_cmd=None, log=lambda *a: None, confirm=lambda *a: None)
+
+        # Regression: this call used to omit backend= entirely, silently
+        # falling back to launch_llama_server's legacy auto-pick (always
+        # Vulkan on a machine where it's installed) regardless of which
+        # backend the dashboard actually resolved -- which meant a ROCm
+        # device id like "ROCm0" got handed to the Vulkan binary, which
+        # doesn't recognize it and falls back to using every GPU.
+        mock_launch.assert_called_once()
+        self.assertEqual(mock_launch.call_args.kwargs.get("backend"), "rocm")
+
+    def test_switch_to_model_reuses_already_loaded_model(self):
+        from unittest.mock import patch
+        from localbench.runner import _switch_to_model
+
+        model_cfg = {"name": "GLM-4.6V-Flash-Q4_K_M", "runtime_flavor": "llamacpp"}
+        logs = []
+
+        # launch_llama_server always stops any running server first, so
+        # relaunching a model that is already serving unloads and reloads the
+        # identical multi-GB weights for nothing.
+        with patch("localbench.llamacpp_mgr.launch_llama_server") as mock_launch, \
+             patch("localbench.llamacpp_mgr.find_model_gguf", return_value=r"C:\models\glm.gguf"), \
+             patch("localbench.llamacpp_mgr.is_model_already_serving", return_value=True):
+            _switch_to_model(model_cfg, base_url="http://localhost:8080/v1", unload_all_cmd=None, log=logs.append, confirm=lambda *a: None)
+
+        mock_launch.assert_not_called()
+        self.assertTrue(any("reusing" in line for line in logs), logs)
+
     def test_build_runtime_load_cmd_vllm(self):
         from localbench.runner import _build_runtime_load_cmd
         model_cfg = {
@@ -286,13 +334,36 @@ class TestLocalbenchCore(unittest.TestCase):
         from localbench.data.hardware_perf_problems import generate_problems, NUM_PROBLEMS
         problems = generate_problems(seed=42)
         self.assertEqual(len(problems), NUM_PROBLEMS)
-        self.assertEqual(NUM_PROBLEMS, 6)
+        self.assertEqual(NUM_PROBLEMS, 8)
         ids = [p["id"] for p in problems]
         self.assertEqual(len(ids), len(set(ids)), "problem ids must be unique")
         prefill_ids = [p["id"] for p in problems if p["task_type"] == "prefill"]
         decode_ids = [p["id"] for p in problems if p["task_type"] == "decode"]
-        self.assertEqual(len(prefill_ids), 4)
+        self.assertEqual(len(prefill_ids), 6)
         self.assertEqual(len(decode_ids), 2)
+
+    def test_hardware_perf_tiers_respect_context_window(self):
+        from localbench.data.hardware_perf_problems import (
+            generate_problems, tiers_for_context, num_problems_for_context,
+        )
+
+        # A prefill probe that exceeds the context window is not a slow
+        # measurement, it's a failed call -- so oversized tiers must be
+        # dropped rather than attempted.
+        self.assertEqual([t[0] for t in tiers_for_context(4096)], ["prefill_tiny", "prefill_small"])
+        self.assertEqual(len(tiers_for_context(None)), 6)
+
+        # Larger windows unlock strictly more tiers, never fewer.
+        counts = [num_problems_for_context(c) for c in (4096, 8192, 16384, 32768, 131072)]
+        self.assertEqual(counts, sorted(counts))
+        self.assertEqual(counts[-1], 8)
+
+        # Every generated prompt must plausibly fit its window.
+        for ctx in (4096, 8192, 32768):
+            for p in generate_problems(seed=42, max_context_tokens=ctx):
+                if p["task_type"] != "prefill":
+                    continue
+                self.assertLessEqual(p["est_prompt_tokens"], ctx, f"{p['id']} at ctx={ctx}")
 
     def test_hardware_perf_problems_deterministic_per_seed(self):
         from localbench.data.hardware_perf_problems import generate_problems
@@ -313,7 +384,7 @@ class TestLocalbenchCore(unittest.TestCase):
     def test_hardware_perf_task_count_not_halved_by_quick_profile(self):
         # A real bug this locks in: setting num_problems for display purposes
         # would have made problems_for()'s quick-profile logic halve the
-        # reported count (3 instead of 6), contradicting "always the fixed
+        # reported count (4 instead of 8), contradicting "always the fixed
         # set" -- see webapp/main.py's _suite_profile_count.
         from localbench.data.hardware_perf_problems import NUM_PROBLEMS
         from localbench.profiles import problems_for
@@ -322,7 +393,7 @@ class TestLocalbenchCore(unittest.TestCase):
         # webapp/main.py's _suite_profile_count special-cases it to
         # NUM_PROBLEMS instead of calling problems_for() at all.
         self.assertIsNone(problems_for("hardware_perf", "quick", None))
-        self.assertEqual(NUM_PROBLEMS, 6)
+        self.assertEqual(NUM_PROBLEMS, 8)
 
     def test_hardware_perf_suite_grades_on_completion_not_correctness(self):
         from localbench.suites.hardware_perf_suite import _run_one
@@ -433,6 +504,261 @@ class TestLocalbenchCore(unittest.TestCase):
             result = probe_backend_devices(r"C:\does\not\exist.exe")
         self.assertFalse(result["available"])
         self.assertIn("no such file", result["error"])
+
+    def test_resolve_vendor_dirs_reads_manifest_and_resolves_existing_dirs(self):
+        import json
+        import tempfile
+        from localbench.llamacpp_mgr import _resolve_vendor_dirs
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backends_root = os.path.join(tmp, "backends")
+            backend_dir = os.path.join(backends_root, "llama.cpp-fake-rocm")
+            vendor_pkg = os.path.join(backends_root, "vendor", "fake-vendor")
+            vendor_bin = os.path.join(vendor_pkg, "bin")
+            os.makedirs(backend_dir)
+            os.makedirs(vendor_bin)
+            with open(os.path.join(backend_dir, "backend-manifest.json"), "w") as f:
+                json.dump({"vendor_lib_package_names": ["fake-vendor"]}, f)
+
+            dirs = _resolve_vendor_dirs(backend_dir)
+            self.assertIn(vendor_pkg, dirs)
+            self.assertIn(vendor_bin, dirs)
+
+    def test_resolve_vendor_dirs_empty_without_manifest_or_vendor_field(self):
+        import json
+        import tempfile
+        from localbench.llamacpp_mgr import _resolve_vendor_dirs
+
+        with tempfile.TemporaryDirectory() as tmp:
+            # No manifest file at all.
+            self.assertEqual(_resolve_vendor_dirs(tmp), [])
+
+            # Manifest present but declares no vendor package (e.g. CPU build).
+            backend_dir = os.path.join(tmp, "cpu-backend")
+            os.makedirs(backend_dir)
+            with open(os.path.join(backend_dir, "backend-manifest.json"), "w") as f:
+                json.dump({"vendor_lib_package_names": []}, f)
+            self.assertEqual(_resolve_vendor_dirs(backend_dir), [])
+
+    def test_classify_vendors_detects_amd_and_nvidia_from_device_names(self):
+        from localbench.llamacpp_mgr import _classify_vendors
+
+        self.assertEqual(_classify_vendors({"AMD Radeon RX 7800 XT", "AMD Radeon RX 6650 XT"}), {"amd"})
+        self.assertEqual(_classify_vendors({"NVIDIA GeForce RTX 4090"}), {"nvidia"})
+        self.assertEqual(_classify_vendors({"AMD Radeon RX 7800 XT", "NVIDIA GeForce RTX 4090"}), {"amd", "nvidia"})
+        self.assertEqual(_classify_vendors(set()), set())
+
+    def test_list_llama_backends_filters_cuda_on_amd_only_machine(self):
+        from unittest.mock import patch
+        from localbench.llamacpp_mgr import list_llama_backends_with_status
+
+        fake_backends = [
+            {"id": "rocm", "label": "ROCm", "path": "rocm.exe"},
+            {"id": "cuda", "label": "CUDA", "path": "cuda.exe"},
+            {"id": "vulkan", "label": "Vulkan", "path": "vulkan.exe"},
+            {"id": "cpu", "label": "CPU", "path": "cpu.exe"},
+        ]
+
+        def fake_probe(path):
+            if path == "vulkan.exe":
+                return {"available": True, "devices": [{"name": "AMD Radeon RX 7800 XT", "id": "Vulkan0", "total_mb": 1, "free_mb": 1}], "error": None}
+            if path == "rocm.exe":
+                return {"available": True, "devices": [{"name": "AMD Radeon RX 7800 XT", "id": "ROCm0", "total_mb": 1, "free_mb": 1}], "error": None}
+            if path == "cpu.exe":
+                return {"available": True, "devices": [], "error": None}
+            # cuda: fails to launch at all on this AMD machine, same as reality.
+            return {"available": False, "devices": [], "error": "missing a required runtime DLL"}
+
+        with patch("localbench.llamacpp_mgr.discover_llama_backends", return_value=fake_backends), \
+             patch("localbench.llamacpp_mgr.probe_backend_devices", side_effect=fake_probe):
+            result = list_llama_backends_with_status()
+
+        ids = {b["id"] for b in result}
+        self.assertEqual(ids, {"rocm", "vulkan", "cpu"})
+        self.assertNotIn("cuda", ids)
+
+    def test_list_llama_backends_filters_rocm_on_nvidia_only_machine(self):
+        from unittest.mock import patch
+        from localbench.llamacpp_mgr import list_llama_backends_with_status
+
+        fake_backends = [
+            {"id": "rocm", "label": "ROCm", "path": "rocm.exe"},
+            {"id": "cuda", "label": "CUDA", "path": "cuda.exe"},
+            {"id": "vulkan", "label": "Vulkan", "path": "vulkan.exe"},
+            {"id": "cpu", "label": "CPU", "path": "cpu.exe"},
+        ]
+
+        def fake_probe(path):
+            if path == "vulkan.exe":
+                return {"available": True, "devices": [{"name": "NVIDIA GeForce RTX 5060", "id": "Vulkan0", "total_mb": 1, "free_mb": 1}], "error": None}
+            if path == "cuda.exe":
+                return {"available": True, "devices": [{"name": "NVIDIA GeForce RTX 5060", "id": "CUDA0", "total_mb": 1, "free_mb": 1}], "error": None}
+            if path == "cpu.exe":
+                return {"available": True, "devices": [], "error": None}
+            # rocm: no AMD GPU present, fails to launch (or simply irrelevant).
+            return {"available": False, "devices": [], "error": "missing a required runtime DLL"}
+
+        with patch("localbench.llamacpp_mgr.discover_llama_backends", return_value=fake_backends), \
+             patch("localbench.llamacpp_mgr.probe_backend_devices", side_effect=fake_probe):
+            result = list_llama_backends_with_status()
+
+        ids = {b["id"] for b in result}
+        self.assertEqual(ids, {"cuda", "vulkan", "cpu"})
+        self.assertNotIn("rocm", ids)
+
+    def test_env_with_vendor_dirs_prepends_to_path(self):
+        from unittest.mock import patch
+        from localbench.llamacpp_mgr import _env_with_vendor_dirs
+
+        with patch("localbench.llamacpp_mgr._resolve_vendor_dirs", return_value=[r"C:\vendor\rocm\bin"]):
+            env = _env_with_vendor_dirs(r"C:\backends\rocm\llama-server.exe")
+        self.assertTrue(env["PATH"].startswith(r"C:\vendor\rocm\bin" + os.pathsep))
+
+        with patch("localbench.llamacpp_mgr._resolve_vendor_dirs", return_value=[]):
+            env = _env_with_vendor_dirs(r"C:\backends\vulkan\llama-server.exe")
+        self.assertEqual(env["PATH"], os.environ.get("PATH", ""))
+
+    def test_run_gpu_description_never_overclaims_gpus(self):
+        from localbench.report import _run_gpu_description
+
+        two_gpu_host = {"gpu": [{"name": "GPU A"}, {"name": "GPU B"}]}
+
+        # 1. Recorded selection wins outright.
+        m = {"runtime_load_info": {"gpuSelection": ["GPU A"], "split_mode": "none"}}
+        self.assertEqual(_run_gpu_description(m, two_gpu_host), "GPU A")
+        m = {"runtime_load_info": {"devices": ["ROCm0"]}}
+        self.assertEqual(_run_gpu_description(m, two_gpu_host), "ROCm0")
+
+        # 2. No recorded devices but split_mode "none" means a single GPU was
+        # used -- must NOT list both host cards (the bug this guards).
+        m = {"runtime_load_info": {"split_mode": "none"}}
+        desc = _run_gpu_description(m, two_gpu_host)
+        self.assertIn("1 of 2", desc)
+        self.assertNotIn("GPU B", desc)
+
+        # 3. Genuinely unknown: host GPUs may be shown, but must be labelled
+        # as the host's rather than presented as the run's.
+        m = {"runtime_load_info": {"split_mode": "layer"}}
+        desc = _run_gpu_description(m, two_gpu_host)
+        self.assertIn("GPU A", desc)
+        self.assertIn("host GPUs", desc)
+
+        # 4. Single-GPU host needs no hedging.
+        self.assertEqual(_run_gpu_description({}, {"gpu": [{"name": "Only GPU"}]}), "Only GPU")
+
+        # 5. No GPU data at all must not raise.
+        self.assertEqual(_run_gpu_description({}, {}), "unknown")
+
+    def test_comparison_markdown_excludes_hardware_perf_from_pass_rate(self):
+        from localbench.report import render_comparison_markdown
+
+        run = {
+            "run_id": "r1",
+            "started_at": "2026-08-30T01:00:00",
+            "hardware": {"gpu": [{"name": "GPU A"}]},
+            "models": {
+                "m": {
+                    "runtime_load_info": {"runtime_flavor": "llamacpp"},
+                    "suites": {
+                        "hardware_perf": {
+                            "pass_rate": 1.0, "pass_count": 6, "total": 6,
+                            "avg_latency_seconds": 1.0, "avg_tokens_per_sec": 50.0, "problems": [],
+                        },
+                        "coding": {
+                            "pass_rate": 0.5, "pass_count": 3, "total": 6,
+                            "avg_latency_seconds": 2.0, "avg_tokens_per_sec": 40.0, "problems": [],
+                        },
+                    },
+                }
+            },
+        }
+        md = render_comparison_markdown([run])
+        hw_line = next(l for l in md.splitlines() if "hardware_perf" in l)
+        coding_line = next(l for l in md.splitlines() if "| coding |" in l)
+        # A speed suite must never present a pass rate next to a real one.
+        self.assertIn("n/a (speed-only suite)", hw_line)
+        self.assertNotIn("100%", hw_line)
+        self.assertIn("50%", coding_line)
+
+    def test_verify_api_key_reports_validity_without_leaking_key(self):
+        from unittest.mock import patch
+        from localbench import settings_store
+
+        class Resp:
+            def __init__(self, code, payload=None):
+                self.status_code = code
+                self._payload = payload or {}
+            def json(self):
+                return self._payload
+
+        # Valid key.
+        with patch.object(settings_store, "_get_key", return_value="sk-secret-value"), \
+             patch("requests.get", return_value=Resp(200)):
+            r = settings_store.verify_api_key("openrouter")
+        self.assertTrue(r["ok"])
+        self.assertNotIn("sk-secret-value", str(r))
+
+        # Rejected key surfaces the provider's own wording, not just a code.
+        with patch.object(settings_store, "_get_key", return_value="sk-bad"), \
+             patch("requests.get", return_value=Resp(401, {"error": {"message": "User not found."}})):
+            r = settings_store.verify_api_key("openrouter")
+        self.assertFalse(r["ok"])
+        self.assertIn("User not found", r["detail"])
+        self.assertNotIn("sk-bad", str(r))
+
+        # No key saved is an answer, not an exception.
+        with patch.object(settings_store, "_get_key", return_value=None):
+            r = settings_store.verify_api_key("anthropic")
+        self.assertFalse(r["ok"])
+
+        # Network failure must not raise either.
+        import requests as _rq
+        with patch.object(settings_store, "_get_key", return_value="sk-x"), \
+             patch("requests.get", side_effect=_rq.exceptions.ConnectionError("boom")):
+            r = settings_store.verify_api_key("openai")
+        self.assertFalse(r["ok"])
+        self.assertIn("Could not reach", r["detail"])
+
+        # Unknown provider is a caller error.
+        with self.assertRaises(ValueError):
+            settings_store.verify_api_key("bogus")
+
+    def test_auxiliary_gguf_filtering(self):
+        from localbench.llamacpp_mgr import is_auxiliary_gguf
+
+        # Real files that llama-server refuses as a main model. The suffix
+        # cases are the regression: an older startswith("mmproj") check let
+        # every one of them into the model list.
+        for name in ("Qwen3.5-2B.BF16-mmproj.gguf", "qwen36_mtp.gguf",
+                     "mmproj-model-f16.gguf", "llama-3-draft.gguf"):
+            self.assertTrue(is_auxiliary_gguf(name), name)
+
+        # Real models must never be hidden -- including ones whose names merely
+        # contain those letters mid-word.
+        for name in ("model.gguf", "qwen.gguf", "Qwen3.8-27B-Q4_K_M.gguf",
+                     "some-mtp-model-7B.gguf", "Draft-Llama-8B.gguf"):
+            self.assertFalse(is_auxiliary_gguf(name), name)
+
+        self.assertFalse(is_auxiliary_gguf("notes.txt"))
+
+    def test_is_model_already_serving_matches_only_exact_model(self):
+        from unittest.mock import patch
+        from localbench import llamacpp_mgr
+
+        class Resp:
+            status_code = 200
+            def __init__(self, path): self._p = path
+            def json(self): return {"data": [{"id": self._p}]}
+
+        target = r"C:\models\foo.gguf"
+        with patch("localbench.llamacpp_mgr.requests.get", return_value=Resp(target)):
+            self.assertTrue(llamacpp_mgr.is_model_already_serving(target))
+        # A different model loaded must force a reload, not be reused.
+        with patch("localbench.llamacpp_mgr.requests.get", return_value=Resp(r"C:\models\other.gguf")):
+            self.assertFalse(llamacpp_mgr.is_model_already_serving(target))
+        # No server at all -> not serving (and must not raise).
+        with patch("localbench.llamacpp_mgr.requests.get", side_effect=OSError("refused")):
+            self.assertFalse(llamacpp_mgr.is_model_already_serving(target))
 
     def test_build_llama_server_args_threads_device_selection(self):
         from localbench.llamacpp_mgr import build_llama_server_args

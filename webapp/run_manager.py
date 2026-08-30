@@ -57,6 +57,8 @@ class ActiveRun:
         # figures); this is real-time-only, like resource_samples.
         self.live_tokens_per_sec: float | None = None
         self.live_ttft_seconds: float | None = None
+        self.live_prefill_tokens_per_sec: float | None = None
+        self.live_problem_id: str | None = None
 
     def _persist(self) -> None:
         try:
@@ -75,9 +77,17 @@ class ActiveRun:
         self.log_lines.append(msg)
         self._persist()
 
-    def update_live_stats(self, tokens_per_sec: float | None, ttft_seconds: float | None) -> None:
+    def update_live_stats(
+        self,
+        tokens_per_sec: float | None,
+        ttft_seconds: float | None,
+        prefill_tokens_per_sec: float | None = None,
+        problem_id: str | None = None,
+    ) -> None:
         self.live_tokens_per_sec = tokens_per_sec
         self.live_ttft_seconds = ttft_seconds
+        self.live_prefill_tokens_per_sec = prefill_tokens_per_sec
+        self.live_problem_id = problem_id
 
     def confirm(self, message: str) -> None:
         self.pending_message = message
@@ -139,6 +149,8 @@ class ActiveRun:
             "done": self.status in ("done", "error", "cancelled"),
             "live_tokens_per_sec": self.live_tokens_per_sec,
             "live_ttft_seconds": self.live_ttft_seconds,
+            "live_prefill_tokens_per_sec": self.live_prefill_tokens_per_sec,
+            "live_problem_id": self.live_problem_id,
         }
         if include_samples:
             data["resource_samples"] = self.live_monitor.latest_samples()

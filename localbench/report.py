@@ -60,7 +60,10 @@ def _models_summary_block(run: dict) -> str:
     ultra-compressed model (e.g. end-to-end low-bit trained) against a
     traditionally post-training-quantized model of similar parameter count:
     does it actually keep pass rate while using a fraction of the size?"""
-    lines = ["| Model | Size on Disk | Quantization | Context Length |", "|---|---|---|---|"]
+    lines = [
+        "| Model | Size on Disk | Quantization | Context Length | Engine / Backend / GPUs |",
+        "|---|---|---|---|---|",
+    ]
     for model_name, model_result in run["models"].items():
         info = model_result.get("runtime_load_info") or {}
         size_bytes = info.get("size_bytes")
@@ -68,8 +71,156 @@ def _models_summary_block(run: dict) -> str:
         quant = info.get("quantization")
         quant_str = quant.get("name") if isinstance(quant, dict) else "unknown"
         ctx_len = info.get("context_length", "unknown")
-        lines.append(f"| {model_name} | {size_str} | {quant_str} | {ctx_len} |")
+        lines.append(
+            f"| {model_name} | {size_str} | {quant_str} | {ctx_len} | {_engine_summary(model_result, run.get('hardware', {}))} |"
+        )
     return "\n".join(lines)
+
+
+# hardware_perf problem ids, in the order the suite generates them, paired
+# with the short column label each represents. Kept here (rather than importing
+# from the suite) so a saved run from an older/newer version still renders:
+# a missing id just shows as "-".
+_HW_PREFILL_TIERS = [
+    ("prefill_tiny", "~200 tok"),
+    ("prefill_small", "~1k tok"),
+    ("prefill_medium", "~4k tok"),
+    ("prefill_large", "~8k tok"),
+    ("prefill_xl", "~16k tok"),
+    ("prefill_xxl", "~32k tok"),
+]
+_HW_DECODE_TIERS = [("decode_short", "1024 gen"), ("decode_long", "4096 gen")]
+
+
+def _hw_problem(suite: dict, problem_id: str) -> dict | None:
+    for p in suite.get("problems", []):
+        if p.get("problem_id") == problem_id:
+            return p
+    return None
+
+
+def _hardware_perf_rows(run: dict) -> list[tuple[str, list[str]]]:
+    """(model_name, cells) for the hardware_perf speed table.
+
+    This suite measures throughput, not correctness, so a pass rate for it is
+    meaningless (everything that completes "passes"). It gets its own table
+    built from prefill_tokens_per_sec / tokens_per_sec instead -- without this
+    the headline numbers of the whole suite never appeared in a report at all.
+    """
+    rows = []
+    for model_name, model_result in run["models"].items():
+        suite = model_result["suites"].get("hardware_perf")
+        if suite is None:
+            continue
+        cells = []
+        for pid, _ in _HW_PREFILL_TIERS:
+            p = _hw_problem(suite, pid)
+            cells.append(_fmt_num(p.get("prefill_tokens_per_sec"), 0) if p else "-")
+        for pid, _ in _HW_DECODE_TIERS:
+            p = _hw_problem(suite, pid)
+            cells.append(_fmt_num(p.get("tokens_per_sec"), 1) if p else "-")
+        tiny = _hw_problem(suite, "prefill_tiny")
+        cells.append(_fmt_num(tiny.get("ttft_seconds"), 2) if tiny else "-")
+        rows.append((model_name, cells))
+    return rows
+
+
+_HW_NOTE = (
+    "Raw hardware throughput for this model on this machine -- speed only, not "
+    "correctness, so it carries no pass rate and is deliberately excluded from "
+    "the accuracy tables below. Prefill is prompt processing (prompt tokens / "
+    "time-to-first-token) measured across escalating context lengths; decode "
+    "is sustained generation speed. Prefill usually climbs sharply with "
+    "context length as the GPU saturates, which a single-length test would "
+    "hide. A tier shows '-' when it was skipped because it exceeded that "
+    "model's configured context window."
+)
+
+
+def _outcome_counts(suite: dict) -> str:
+    """Failure states broken out, rather than lumping every non-pass together.
+
+    `truncated`, `loop_detected` and `early_exit` are tracked per problem and
+    shown in the dashboard, but were previously invisible in reports -- yet
+    they mean very different things: hitting the token budget, getting stuck
+    repeating, or answering correctly but never stopping.
+    """
+    problems = suite.get("problems", [])
+    truncated = sum(1 for p in problems if p.get("truncated"))
+    looped = sum(1 for p in problems if p.get("loop_detected"))
+    early = sum(1 for p in problems if p.get("early_exit"))
+    bits = []
+    if truncated:
+        bits.append(f"{truncated} truncated")
+    if looped:
+        bits.append(f"{looped} loop-detected")
+    if early:
+        bits.append(f"{early} early-exit")
+    return ", ".join(bits) if bits else "-"
+
+
+def _pass_with_ci(suite: dict) -> str:
+    """Pass rate plus its 95% confidence interval.
+
+    The interval is already computed and stored per suite; omitting it from
+    reports overstated precision, since on a 6-12 problem suite a single
+    problem is a large swing.
+    """
+    base = f"{_fmt_pct(suite['pass_rate'])} ({suite['pass_count']}/{suite['total']})"
+    ci = suite.get("pass_rate_ci")
+    if isinstance(ci, (list, tuple)) and len(ci) == 2 and ci[0] is not None:
+        return f"{base} [{_fmt_pct(ci[0])}-{_fmt_pct(ci[1])}]"
+    return base
+
+
+def _run_gpu_description(model_result: dict, hardware: dict) -> str:
+    """Which GPU(s) a run actually used, distinguishing recorded from inferred.
+
+    `hardware["gpu"]` lists every GPU *installed* on the host, captured once
+    per run and independent of which devices the run was restricted to.
+    Reporting it as the run's GPUs misstates a single-GPU run on a multi-GPU
+    machine as having used every card -- an unmeasured claim. See the matching
+    describeRunGpus() in app.js.
+    """
+    info = model_result.get("runtime_load_info") or {}
+    recorded = info.get("gpuSelection") or info.get("devices")
+    if isinstance(recorded, list) and recorded:
+        return " + ".join(str(g) for g in recorded)
+
+    gpu = hardware.get("gpu")
+    host = [str(g.get("name", "GPU")) for g in gpu] if isinstance(gpu, list) else []
+    # split_mode "none" means one GPU either way (the config modal writes it
+    # when a single GPU is picked; llama.cpp's own `-sm none` likewise means
+    # "use one GPU"), so the count is known even when the identity isn't.
+    if info.get("split_mode") == "none" and len(host) > 1:
+        return f"1 of {len(host)} GPUs (which one not recorded)"
+    if host:
+        return " + ".join(host) + ("" if len(host) == 1 else " (host GPUs; per-run selection not recorded)")
+    return "unknown"
+
+
+def _engine_summary(model_result: dict, hardware: dict | None = None) -> str:
+    """Which runtime/compute backend and GPUs actually produced these numbers.
+
+    Speed numbers are meaningless without it: the same model on the same box
+    can differ several-fold between compute backends or GPU selections, so a
+    report that omits this can't be compared against another run honestly.
+    """
+    info = model_result.get("runtime_load_info") or {}
+    bits = []
+    flavor = info.get("runtime_flavor")
+    backend = info.get("backend")
+    if flavor:
+        bits.append(str(flavor))
+    if backend:
+        bits.append(str(backend))
+    if hardware is not None:
+        bits.append(_run_gpu_description(model_result, hardware))
+    else:
+        gpus = info.get("gpuSelection") or info.get("devices")
+        if isinstance(gpus, list) and gpus:
+            bits.append(" + ".join(str(g) for g in gpus))
+    return " / ".join(bits) if bits else "unknown"
 
 
 def render_markdown(run: dict) -> str:
@@ -96,25 +247,43 @@ def render_markdown(run: dict) -> str:
         "no GPU probe was available, never a guess.*"
     )
 
-    deterministic_suites = [s for s in _suite_names(run) if s != "frontier_graded"]
+    # hardware_perf measures speed, not correctness -- it gets its own table
+    # and is kept out of the accuracy loop, matching how the dashboard treats
+    # it. Rendering it as a normal suite would show a meaningless ~100% "pass
+    # rate" alongside real accuracy scores.
+    if "hardware_perf" in _suite_names(run):
+        lines.append("## hardware_perf — raw speed")
+        lines.append("")
+        lines.append(f"*{_HW_NOTE}*")
+        lines.append("")
+        header = ["Model"] + [f"Prefill {lbl}" for _, lbl in _HW_PREFILL_TIERS] + [f"Decode {lbl}" for _, lbl in _HW_DECODE_TIERS] + ["TTFT (s)"]
+        lines.append("| " + " | ".join(header) + " |")
+        lines.append("|" + "---|" * len(header))
+        for model_name, cells in _hardware_perf_rows(run):
+            lines.append(f"| {model_name} | " + " | ".join(cells) + " |")
+        lines.append("")
+        lines.append("*Prefill and decode figures are tokens/sec; higher is better.*")
+        lines.append("")
+
+    deterministic_suites = [s for s in _suite_names(run) if s not in ("frontier_graded", "hardware_perf")]
 
     for suite_name in deterministic_suites:
         lines.append(f"## {suite_name}")
         lines.append("")
         lines.append(
-            "| Model | Pass Rate | Avg Latency (s) | Avg TTFT (s) | Avg Tokens/sec | "
+            "| Model | Pass Rate (95% CI) | Outcomes | Avg Latency (s) | Avg TTFT (s) | Avg Tokens/sec | "
             "VRAM used (GB) | VRAM Δ (MB) | GPU % | RAM Δ (GB) | Peak CPU % |"
         )
-        lines.append("|---|---|---|---|---|---|---|---|---|---|")
+        lines.append("|---|---|---|---|---|---|---|---|---|---|---|")
         for model_name, model_result in run["models"].items():
             suite = model_result["suites"].get(suite_name)
             if suite is None:
                 continue
-            pass_str = f"{_fmt_pct(suite['pass_rate'])} ({suite['pass_count']}/{suite['total']})"
+            pass_str = _pass_with_ci(suite)
             resource = suite.get("resource_usage") or {}
             vram_total = resource.get("peak_vram_mb_total")
             lines.append(
-                f"| {model_name} | {pass_str} | "
+                f"| {model_name} | {pass_str} | {_outcome_counts(suite)} | "
                 f"{_fmt_num(suite['avg_latency_seconds'])} | "
                 f"{_fmt_num(suite.get('avg_ttft_seconds'))} | "
                 f"{_fmt_num(suite['avg_tokens_per_sec'])} | "
@@ -181,17 +350,32 @@ def render_comparison_markdown(runs: list[dict]) -> str:
     """Compare the same suite/model across multiple saved runs (e.g. different
     hardware, or re-runs over time)."""
     lines = ["# TaskMatch AI comparison", ""]
-    lines.append("| Run | Started | Hardware | Model | Suite | Pass Rate | Avg Latency (s) | Tok/s |")
-    lines.append("|---|---|---|---|---|---|---|---|")
+    lines.append(
+        "| Run | Started | Host GPUs (installed) | Engine / Backend / GPUs used | Model | Suite | "
+        "Pass Rate (95% CI) | Avg Latency (s) | Tok/s |"
+    )
+    lines.append("|---|---|---|---|---|---|---|---|---|")
     for run in runs:
         hw = run.get("hardware", {})
         gpu = hw.get("gpu")
-        gpu_name = gpu[0]["name"] if isinstance(gpu, list) and gpu else "unknown"
+        # Every detected GPU, not just the first -- on a multi-GPU box naming
+        # only gpu[0] silently misattributes the run to one card.
+        if isinstance(gpu, list) and gpu:
+            gpu_name = " + ".join(str(g.get("name", "GPU")) for g in gpu)
+        else:
+            gpu_name = "unknown"
         for model_name, model_result in run["models"].items():
+            engine = _engine_summary(model_result, hw)
             for suite_name, suite in model_result["suites"].items():
-                pass_str = f"{_fmt_pct(suite['pass_rate'])} ({suite['pass_count']}/{suite['total']})"
+                # hardware_perf grades completion, not correctness, so its
+                # ~100% "pass rate" is not comparable to an accuracy suite's
+                # and must not sit in the same column as one.
+                if suite_name == "hardware_perf":
+                    pass_str = "n/a (speed-only suite)"
+                else:
+                    pass_str = _pass_with_ci(suite)
                 lines.append(
-                    f"| {run['run_id']} | {run.get('started_at', '?')} | {gpu_name} | "
+                    f"| {run['run_id']} | {run.get('started_at', '?')} | {gpu_name} | {engine} | "
                     f"{model_name} | {suite_name} | {pass_str} | "
                     f"{_fmt_num(suite['avg_latency_seconds'])} | "
                     f"{_fmt_num(suite['avg_tokens_per_sec'])} |"
@@ -221,7 +405,10 @@ def render_html(run: dict) -> str:
     parts.append(f"<div class='meta'>Started: {esc(str(run.get('started_at', 'unknown')))}</div>")
 
     parts.append("<h2>Models</h2>")
-    parts.append("<table><tr><th>Model</th><th>Size on Disk</th><th>Quantization</th><th>Context Length</th></tr>")
+    parts.append(
+        "<table><tr><th>Model</th><th>Size on Disk</th><th>Quantization</th>"
+        "<th>Context Length</th><th>Engine / Backend / GPUs</th></tr>"
+    )
     for model_name, model_result in run["models"].items():
         info = model_result.get("runtime_load_info") or {}
         size_bytes = info.get("size_bytes")
@@ -229,7 +416,10 @@ def render_html(run: dict) -> str:
         quant = info.get("quantization")
         quant_str = quant.get("name") if isinstance(quant, dict) else "unknown"
         ctx_len = info.get("context_length", "unknown")
-        parts.append(f"<tr><td>{esc(model_name)}</td><td>{size_str}</td><td>{esc(str(quant_str))}</td><td>{ctx_len}</td></tr>")
+        parts.append(
+            f"<tr><td>{esc(model_name)}</td><td>{size_str}</td><td>{esc(str(quant_str))}</td>"
+            f"<td>{ctx_len}</td><td>{esc(_engine_summary(model_result, run.get('hardware', {})))}</td></tr>"
+        )
     parts.append("</table>")
 
     hw = run.get("hardware", {})
@@ -250,10 +440,21 @@ def render_html(run: dict) -> str:
         "</div>"
     )
 
-    for suite_name in [s for s in _suite_names(run) if s != "frontier_graded"]:
+    # Speed-only suite: own table, kept out of the accuracy loop (see _HW_NOTE).
+    if "hardware_perf" in _suite_names(run):
+        parts.append("<h2>hardware_perf &mdash; raw speed</h2>")
+        parts.append(f"<div class='meta'>{esc(_HW_NOTE)}</div>")
+        header = ["Model"] + [f"Prefill {lbl}" for _, lbl in _HW_PREFILL_TIERS] + [f"Decode {lbl}" for _, lbl in _HW_DECODE_TIERS] + ["TTFT (s)"]
+        parts.append("<table><tr>" + "".join(f"<th>{esc(h)}</th>" for h in header) + "</tr>")
+        for model_name, cells in _hardware_perf_rows(run):
+            parts.append(f"<tr><td>{esc(model_name)}</td>" + "".join(f"<td>{esc(c)}</td>" for c in cells) + "</tr>")
+        parts.append("</table>")
+        parts.append("<div class='meta'>Prefill and decode figures are tokens/sec; higher is better.</div>")
+
+    for suite_name in [s for s in _suite_names(run) if s not in ("frontier_graded", "hardware_perf")]:
         parts.append(f"<h2>{esc(suite_name)}</h2>")
         parts.append(
-            "<table><tr><th>Model</th><th>Pass Rate</th>"
+            "<table><tr><th>Model</th><th>Pass Rate (95% CI)</th><th>Outcomes</th>"
             "<th>Avg Latency (s)</th><th>Avg TTFT (s)</th><th>Avg Tokens/sec</th>"
             "<th>RAM &Delta; (GB)</th><th>VRAM &Delta; (MB)</th><th>Peak CPU %</th></tr>"
         )
@@ -262,10 +463,10 @@ def render_html(run: dict) -> str:
             suite = model_result["suites"].get(suite_name)
             if suite is None:
                 continue
-            pass_str = f"{_fmt_pct(suite['pass_rate'])} ({suite['pass_count']}/{suite['total']})"
+            pass_str = _pass_with_ci(suite)
             resource = suite.get("resource_usage") or {}
             parts.append(
-                f"<tr><td>{esc(model_name)}</td><td>{pass_str}</td>"
+                f"<tr><td>{esc(model_name)}</td><td>{pass_str}</td><td>{esc(_outcome_counts(suite))}</td>"
                 f"<td>{_fmt_num(suite['avg_latency_seconds'])}</td>"
                 f"<td>{_fmt_num(suite.get('avg_ttft_seconds'))}</td>"
                 f"<td>{_fmt_num(suite['avg_tokens_per_sec'])}</td>"

@@ -15,23 +15,57 @@ paid frontier one, backed by numbers instead of a guess.
 
 ![Compare view: head-to-head verdict with confidence intervals, a speed-vs-accuracy Pareto chart, and a per-suite radar chart](docs/compare_view.png)
 
+## Choose the hardware, not just the model
+
+TaskMatch AI drives llama.cpp directly: it finds your installed compute
+backends, **verifies which ones actually run on your machine**, and lets you
+pick the exact GPU(s) a benchmark should use.
+
+![Model library: detected models with per-GPU VRAM fit, sized against the GPUs actually installed](docs/dashboard.png)
+
+Backends are not trusted on file presence — each candidate binary is launched
+with `--list-devices` and only offered if it genuinely works here. A backend
+whose vendor isn't present is hidden outright (CUDA on an all-AMD machine,
+ROCm on an NVIDIA one), and ROCm is offered for a single GPU only, since it
+cannot combine mixed GPU generations. Vulkan is always available, being
+vendor-neutral.
+
+## Which model is fastest *on this box*
+
+The `hardware_perf` suite measures raw throughput — prefill (prompt
+processing) across escalating context sizes, and sustained decode speed —
+and the **Hardware Bench** tab compares every run you've done.
+
+![Hardware Bench: prefill and decode throughput per model, with a sortable speed comparison chart](docs/hardware_bench.png)
+
+Every run is kept rather than just the latest per model, because comparing
+*the same model across different backends or GPU counts* is the point. In the
+capture above, one model runs faster on a single GPU (54.0 tok/s) than split
+across two (48.3 tok/s) — the kind of result that only shows up when both
+runs are preserved side by side.
+
 ## What it measures
 
 **hardware_perf** runs first, before anything else, and is different in kind
 from every other suite: it measures raw speed, not correctness. Prefill
-throughput (prompt tokens processed per second) at four context-length tiers
-(~200 / 1,000 / 4,000 / 8,000 tokens), plus sustained decode speed on two
-longer generations. This is the suite for the "which hardware handles which
-model best" question — a live run on an RX 7800 XT went from 85 tok/s
-prefill at 207 tokens of context to 860 tok/s at 7,080 tokens, a real,
-10x-scaling difference a single-length test would never surface. Because
-"passed" here just means the call completed (not that an answer was
+throughput (prompt tokens processed per second) across six context-length
+tiers (~200 / 1k / 4k / 8k / 16k / 32k tokens), plus sustained decode speed
+on two longer generations. Tiers that would exceed a model's configured
+context window are skipped rather than attempted. This is the suite for the
+"which hardware handles which model best" question — a live run on an
+RX 7800 XT went from 85 tok/s prefill at 207 tokens of context to 860 tok/s
+at 7,080 tokens, a real 10x-scaling difference a single-length test would
+never surface, and it had not plateaued by 8k — which is why the larger
+tiers exist.
+
+Because "passed" here just means the call completed (not that an answer was
 correct), it's deliberately excluded from the pass-rate/verdict/radar-chart
 comparisons the other suites feed — mixing a suite where nearly everything
 trivially "passes" into an accuracy mean would inflate it without saying
-anything about accuracy. Always runs the same fixed 6-problem set regardless
-of Quick/Full profile, since there's no statistical-sampling reason to run
-fewer or more of the same speed measurement.
+anything about accuracy. It runs the same fixed set regardless of
+Quick/Full profile (up to 8 probes; fewer when a model's context window
+can't hold the largest prompts), since there's no statistical-sampling
+reason to run fewer or more of the same speed measurement.
 
 Beyond that, eight fully deterministic accuracy job suites (no LLM-as-judge
 — every result is exact-match, schema-validated, or actually executed):
@@ -88,9 +122,9 @@ Every pass rate is reported with a 95% confidence interval, and the
 head-to-head verdict refuses to name a winner when the intervals overlap,
 rather than presenting measurement noise as a result.
 
-A seventh, opt-in **frontier_graded** suite exists for open-ended tasks that
-can't be graded deterministically (see below) — it's never mixed into the
-six deterministic suites' scoring.
+One further opt-in suite, **frontier_graded**, exists for open-ended tasks
+that can't be graded deterministically (see below) — it is never mixed into
+the deterministic suites' scoring.
 
 ## Install
 
@@ -130,8 +164,11 @@ by accident.
 | | Benchmarks & dashboard | GPU memory / utilization |
 |---|---|---|
 | **Windows** | full | any vendor — AMD, Intel, NVIDIA (via OS GPU counters) |
-| **Linux** | full | NVIDIA only (`nvidia-smi`) |
-| **macOS** | full | not available |
+| **Linux** | full | NVIDIA (`nvidia-smi`); AMD via `rocm-smi`/`amd-smi` (untested on real ROCm hardware) |
+| **macOS** | full | best-effort via `ioreg` (untested on real Apple hardware) |
+
+Launch with `python cli.py serve` on any platform, or use the bundled
+`start.bat` (Windows) / `start.sh` (macOS/Linux) convenience wrappers.
 
 Every suite, the scoring, the reports and the whole dashboard are pure Python
 and work identically everywhere. Only *GPU* telemetry is platform-dependent:
@@ -255,8 +292,8 @@ from a previous run with that exact judge:
   stale.
 
 Reports always show this suite in a visually distinct "Frontier-Graded
-(non-deterministic, paid)" section, never mixed into the six suites'
-pass-rate numbers.
+(non-deterministic, paid)" section, never mixed into the deterministic
+suites' pass-rate numbers.
 
 Only install the SDK for the provider you're actually using (see
 `requirements.txt`) — each is imported lazily, so the rest of the app
@@ -372,6 +409,7 @@ results/runs/                     # one JSON file per benchmark run (gitignored)
 | [SECURITY.md](SECURITY.md) | What data leaves your machine (and what doesn't), how API keys are stored, and the code-execution risk in the `coding` suite. **Read before benchmarking a model you don't trust.** |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Dev setup, tests, how to add a job suite, and the project's core rule on never displaying an unmeasured number. |
 | [TASK_SPEC.md](TASK_SPEC.md) | The rubric the frontier judge is given, including the anti-hallucination contract. |
+| [CHANGELOG.md](CHANGELOG.md) | What changed in each release, including the measurement bugs fixed and the limitations still outstanding. |
 
 ## License
 

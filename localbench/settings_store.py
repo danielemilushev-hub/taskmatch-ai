@@ -55,6 +55,9 @@ def _save(data: dict) -> None:
         _yaml.dump(data, f)
 
 
+RUNTIME_FLAVORS = ("llamacpp", "lmstudio", "ollama", "vllm")
+
+
 def get_runtime_settings() -> dict:
     data = _load()
     runtime = data.get("runtime", {})
@@ -62,6 +65,12 @@ def get_runtime_settings() -> dict:
         "base_url": runtime.get("base_url"),
         "request_timeout_seconds": runtime.get("request_timeout_seconds"),
         "unload_all_cmd": runtime.get("unload_all_cmd"),
+        # Which local server every model run targets -- a single, global
+        # choice (only one local inference server is ever actually listening
+        # on this workstation at a time), not a per-model setting. Defaults
+        # to llamacpp since that's the only engine this app fully drives
+        # itself (binary discovery, compute backend, GPU selection).
+        "runtime_flavor": runtime.get("runtime_flavor", "llamacpp"),
     }
 
 
@@ -74,6 +83,12 @@ def update_runtime_settings(updates: dict) -> dict:
         if not base_url:
             raise ValueError("base_url cannot be empty")
         runtime["base_url"] = base_url
+
+    if "runtime_flavor" in updates:
+        flavor = updates["runtime_flavor"]
+        if flavor not in RUNTIME_FLAVORS:
+            raise ValueError(f"runtime_flavor must be one of {RUNTIME_FLAVORS}")
+        runtime["runtime_flavor"] = flavor
 
     if "request_timeout_seconds" in updates:
         val = updates["request_timeout_seconds"]
@@ -174,6 +189,58 @@ def _get_key(provider: str) -> str | None:
 
     env_values = dotenv_values(ENV_PATH) if ENV_PATH.exists() else {}
     return env_values.get(PROVIDER_ENV_VARS.get(provider, ""))
+
+
+# Cheapest read-only "is this key valid" endpoint per provider. All are
+# metadata/list calls -- none generate tokens, so testing a key is free.
+_KEY_TEST_ENDPOINTS = {
+    "anthropic": ("https://api.anthropic.com/v1/models", lambda k: {"x-api-key": k, "anthropic-version": "2023-06-01"}),
+    "openai": ("https://api.openai.com/v1/models", lambda k: {"Authorization": f"Bearer {k}"}),
+    "openrouter": ("https://openrouter.ai/api/v1/key", lambda k: {"Authorization": f"Bearer {k}"}),
+    "gemini": ("https://generativelanguage.googleapis.com/v1beta/models", lambda k: {"x-goog-api-key": k}),
+}
+
+
+def verify_api_key(provider: str) -> dict:
+    """Ask the provider whether the stored key is actually accepted.
+
+    Returns {"ok": bool, "detail": str}. Never raises for network/auth
+    problems (those are the answer, not an error) and never includes the key
+    itself in the result -- only whether it worked.
+    """
+    # Imported lazily, matching the other network helpers in this module.
+    import requests
+
+    if provider not in PROVIDER_ENV_VARS:
+        raise ValueError(f"unknown provider '{provider}', expected one of {list(PROVIDER_ENV_VARS)}")
+
+    key = _get_key(provider)
+    if not key:
+        return {"ok": False, "detail": "No key saved for this provider."}
+
+    endpoint = _KEY_TEST_ENDPOINTS.get(provider)
+    if endpoint is None:
+        return {"ok": False, "detail": "No validation endpoint known for this provider."}
+
+    url, headers_fn = endpoint
+    try:
+        resp = requests.get(url, headers=headers_fn(key), timeout=20)
+    except requests.exceptions.RequestException as e:
+        return {"ok": False, "detail": f"Could not reach {provider}: {e.__class__.__name__}"}
+
+    if resp.status_code == 200:
+        return {"ok": True, "detail": "Key is valid and accepted by the provider."}
+    if resp.status_code in (401, 403):
+        # Surface the provider's own wording -- "User not found" and
+        # "insufficient credits" are very different problems for the user.
+        detail = ""
+        try:
+            body = resp.json()
+            detail = (body.get("error") or {}).get("message") or ""
+        except ValueError:
+            pass
+        return {"ok": False, "detail": f"Rejected ({resp.status_code}): {detail or 'key not accepted'}"}
+    return {"ok": False, "detail": f"Unexpected response from provider (HTTP {resp.status_code})."}
 
 
 def list_judge_models(provider: str) -> list[str]:
@@ -301,16 +368,26 @@ def get_model_directories() -> list[str]:
     if not isinstance(dirs, list):
         dirs = []
     
-    # Always include standard host model folders as defaults
+    # Standard host model folders, added as defaults so a fresh install finds
+    # models without any configuration. Home-relative paths work everywhere;
+    # the drive-letter guesses are Windows-only and must NOT be abspath()'d on
+    # POSIX, where "C:\models" isn't absolute and would resolve against the
+    # current working directory into a junk path like
+    # "/home/user/app/C:\models" that then shows up in the Settings UI as a
+    # real search directory.
     defaults = [
         os.path.abspath(os.path.expanduser("~/.lmstudio/models")),
         os.path.abspath(os.path.expanduser("~/.cache/lm-studio/models")),
         os.path.abspath(os.path.expanduser("~/.cache/huggingface/hub")),
-        os.path.abspath(r"C:\Games\llama.cpp"),
-        os.path.abspath(r"C:\Games\llama.cpp-new"),
-        os.path.abspath(r"D:\models"),
-        os.path.abspath(r"C:\models"),
+        os.path.abspath(os.path.expanduser("~/.ollama/models")),
     ]
+    if os.name == "nt":
+        defaults += [
+            os.path.abspath(r"C:\models"),
+            os.path.abspath(r"D:\models"),
+        ]
+    else:
+        defaults += ["/usr/share/ollama/.ollama/models"]
     seen = set()
     result = []
     for d in list(dirs) + defaults:

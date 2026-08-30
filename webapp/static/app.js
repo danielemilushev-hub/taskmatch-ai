@@ -12,7 +12,107 @@ const state = {
   modelCatalog: null,
   allModels: [],
   modelFilter: "all",
+  // Populated from /api/hardware/specs by setVramProfileFromSpecs(); stays
+  // null when this machine reports no usable discrete-GPU VRAM reading.
+  vram: null,
 };
+
+// VRAM of the single largest GPU / of all GPUs combined, in GB. Both return
+// null when no VRAM could be detected, so callers must null-check rather than
+// silently comparing against a wrong default -- guessing a size here would
+// mislabel which models "fit" on an unknown machine.
+function vramPrimaryGB() {
+  return state.vram ? state.vram.primaryGB : null;
+}
+function vramTotalGB() {
+  return state.vram ? state.vram.totalGB : null;
+}
+
+/**
+ * Classify how a model of `modelSizeGB` fits this machine's actual VRAM.
+ * Returns {cls, text, fillPct}. Shared by the model card and the config
+ * modal, which previously each carried their own copy of this logic with the
+ * dev machine's VRAM baked in.
+ */
+/**
+ * Describe which GPU(s) a saved run actually used — distinguishing what was
+ * recorded from what is merely inferred, and never presenting the machine's
+ * GPU inventory as if it were the run's.
+ *
+ * `hardware.gpu` is a snapshot of every GPU *installed* on the host, captured
+ * once per run and completely independent of which devices that run was
+ * restricted to. Printing it as the run's GPUs actively misreports a
+ * single-GPU run on a multi-GPU box as having used both cards.
+ *
+ * Three cases, in descending order of confidence:
+ *   1. runtime_load_info.gpuSelection / .devices — the real recorded
+ *      selection (present on runs made after device selection was added).
+ *   2. split_mode === "none" — no direct record of the devices, but this
+ *      means a single GPU either way: the config modal writes "none" exactly
+ *      when one GPU is picked, and llama.cpp's own `-sm none` likewise means
+ *      "use one GPU". We can state the count honestly but not which card.
+ *   3. Otherwise — genuinely unknown; label the list as the host's installed
+ *      hardware rather than implying the run used all of it.
+ */
+function describeRunGpus(rli, hardware) {
+  const recorded = (rli.gpuSelection && rli.gpuSelection.length && rli.gpuSelection)
+    || (rli.devices && rli.devices.length && rli.devices)
+    || null;
+  const hostGpus = Array.isArray(hardware?.gpu) ? hardware.gpu.map((g) => g?.name || "GPU") : [];
+
+  if (recorded) {
+    return {
+      text: recorded.join(" + "),
+      title: "Recorded for this run: the GPU(s) it was explicitly restricted to.",
+    };
+  }
+  if (rli.split_mode === "none" && hostGpus.length > 1) {
+    return {
+      text: `1 of ${hostGpus.length} GPUs (which one not recorded)`,
+      title:
+        "This run used a single GPU (split mode 'none'), but predates per-device " +
+        "recording, so which card it used wasn't saved. Host has: " + hostGpus.join(" + "),
+    };
+  }
+  if (hostGpus.length) {
+    return {
+      text: hostGpus.join(" + "),
+      title:
+        hostGpus.length > 1
+          ? "Host GPUs — this run predates per-device recording, so its exact GPU selection wasn't saved."
+          : "The host's only GPU.",
+    };
+  }
+  return { text: hardware?.cpu || "", title: "No GPU detected for this run." };
+}
+
+function classifyVramFit(modelSizeGB) {
+  const primary = vramPrimaryGB();
+  const total = vramTotalGB();
+
+  if (primary == null) {
+    // Unknown VRAM: report size without claiming a fit we can't verify.
+    return { cls: "gpu1", text: "GPU VRAM not detected", fillPct: 0 };
+  }
+
+  const multiGpu = state.vram.gpuCount > 1;
+  if (modelSizeGB <= primary) {
+    const pct = Math.round((modelSizeGB / primary) * 100);
+    return {
+      cls: "gpu1",
+      text: multiGpu ? `Fits in largest GPU (${pct}%)` : `Fits in GPU (${pct}%)`,
+      fillPct: Math.min(100, pct),
+    };
+  }
+  if (multiGpu && modelSizeGB <= total) {
+    return {
+      cls: "dual",
+      text: `Fits across ${state.vram.gpuCount} GPUs (${Math.round(total)}GB)`,
+      fillPct: 100,
+    };
+  }
+  return { cls: "spill", text: "Exceeds GPU VRAM (spills to RAM)", fillPct: 100 };
+}
 
 // ---------- toast notifications ----------
 function showToast(message, type = "info", duration = 3500) {
@@ -61,6 +161,7 @@ document.querySelectorAll("nav.tabs button").forEach((btn) => {
     if (btn.dataset.view === "history") loadRunList();
     if (btn.dataset.view === "playground") populatePlaygroundModels();
     if (btn.dataset.view === "compare") loadComparePicker();
+    if (btn.dataset.view === "hardware") loadHardwareCompare();
     if (btn.dataset.view === "settings") loadSettings();
   });
 });
@@ -343,8 +444,8 @@ function renderModelGrid(container, models, selectedSet, searchQuery = "") {
       const match = m.match(/(\d+(?:\.\d+)?)\s*[bB]\b/);
       if (match) sizeGB = parseFloat(match[1]) * 0.7;
     }
-    if (sizeGB != null && sizeGB <= 15.98) countGpu1++;
-    if (sizeGB != null && sizeGB > 15.98 && sizeGB <= 23.96) countDual++;
+    if (sizeGB != null && vramPrimaryGB() != null && sizeGB <= vramPrimaryGB()) countGpu1++;
+    if (sizeGB != null && vramPrimaryGB() != null && sizeGB > vramPrimaryGB() && sizeGB <= vramTotalGB()) countDual++;
     if (m.toLowerCase().endsWith(".gguf") || (entry && (entry.file_path || entry.type === "gguf" || entry.format === "gguf"))) countGguf++;
   });
 
@@ -365,8 +466,11 @@ function renderModelGrid(container, models, selectedSet, searchQuery = "") {
       const match = m.match(/(\d+(?:\.\d+)?)\s*[bB]\b/);
       if (match) sizeGB = parseFloat(match[1]) * 0.7;
     }
-    if (filter === "gpu1" && (sizeGB == null || sizeGB > 15.98)) return false;
-    if (filter === "dual" && (sizeGB == null || sizeGB <= 15.98 || sizeGB > 23.96)) return false;
+    // With no VRAM reading available these two filters can't be evaluated at
+    // all; the pills are hidden in that case (updateVramFilterPills), so this
+    // just guards against a stale selection.
+    if (filter === "gpu1" && (sizeGB == null || vramPrimaryGB() == null || sizeGB > vramPrimaryGB())) return false;
+    if (filter === "dual" && (sizeGB == null || vramPrimaryGB() == null || sizeGB <= vramPrimaryGB() || sizeGB > vramTotalGB())) return false;
     if (filter === "gguf" && !m.toLowerCase().endsWith(".gguf") && !(entry && (entry.file_path || entry.type === "gguf" || entry.format === "gguf"))) return false;
     return true;
   });
@@ -422,33 +526,17 @@ function renderModelGrid(container, models, selectedSet, searchQuery = "") {
     }
 
     if (modelSizeGB != null && modelSizeGB > 0) {
-      const gpu1_vram = 15.98;
-      const dual_vram = 23.96;
-      let barClass = "gpu1";
-      let fitClass = "gpu1";
-      let fitText = `Fits in GPU 1 (${Math.round((modelSizeGB / gpu1_vram) * 100)}%)`;
-
-      if (modelSizeGB > gpu1_vram && modelSizeGB <= dual_vram) {
-        barClass = "dual";
-        fitClass = "dual";
-        fitText = `Fits across Dual GPUs (24GB)`;
-      } else if (modelSizeGB > dual_vram) {
-        barClass = "spill";
-        fitClass = "spill";
-        fitText = `Exceeds GPU VRAM (Spills to RAM)`;
-      }
-
-      const fillPct = Math.min(100, Math.round((modelSizeGB / gpu1_vram) * 100));
+      const fit = classifyVramFit(modelSizeGB);
 
       const vramFit = document.createElement("div");
       vramFit.className = "model-vram-fit";
       vramFit.innerHTML = `
         <div class="model-vram-track">
-          <div class="model-vram-fill ${barClass}" style="width:${fillPct}%;"></div>
+          <div class="model-vram-fill ${fit.cls}" style="width:${fit.fillPct}%;"></div>
         </div>
         <div class="model-vram-label">
           <span>${modelSizeGB.toFixed(1)} GB</span>
-          <span class="fit-tag ${fitClass}">${fitText}</span>
+          <span class="fit-tag ${fit.cls}">${escapeHtml(fit.text)}</span>
         </div>
       `;
       info.appendChild(vramFit);
@@ -526,23 +614,11 @@ function openModelConfigModal(modelName) {
   const vramFitBadge = document.getElementById("modal-vram-fit-badge");
   const vramLabel = document.getElementById("modal-vram-label");
   if (modelSizeGB != null && modelSizeGB > 0) {
-    const gpu1_vram = 15.98;
-    const dual_vram = 23.96;
-    let fitText = `Fits in GPU 1 (${Math.round((modelSizeGB / gpu1_vram) * 100)}%)`;
-    let fitClass = "gpu1";
-
-    if (modelSizeGB > gpu1_vram && modelSizeGB <= dual_vram) {
-      fitClass = "dual";
-      fitText = `Fits across Dual GPUs (24GB)`;
-    } else if (modelSizeGB > dual_vram) {
-      fitClass = "spill";
-      fitText = `Exceeds GPU VRAM (Spills to RAM)`;
-    }
-    const fillPct = Math.min(100, Math.round((modelSizeGB / gpu1_vram) * 100));
-    vramFill.style.width = `${fillPct}%`;
-    vramFill.className = `vram-bar-fill ${fitClass}`;
-    vramFitBadge.textContent = fitText;
-    vramFitBadge.className = `vram-fit-pill ${fitClass}`;
+    const fit = classifyVramFit(modelSizeGB);
+    vramFill.style.width = `${fit.fillPct}%`;
+    vramFill.className = `vram-bar-fill ${fit.cls}`;
+    vramFitBadge.textContent = fit.text;
+    vramFitBadge.className = `vram-fit-pill ${fit.cls}`;
     vramLabel.textContent = `Memory Footprint: ${modelSizeGB.toFixed(1)} GB`;
   }
 
@@ -559,7 +635,26 @@ function openModelConfigModal(modelName) {
   const cmdBox = document.getElementById("modal-cmd-preview");
   const statusEl = document.getElementById("modal-action-status");
 
-  engineSel.value = settings.runtime_flavor || "llamacpp";
+  // Runtime Engine is a single global choice (Settings & Engine), not a
+  // per-model setting -- only one local inference server is ever actually
+  // listening on this workstation at a time. Seed with whatever's cached
+  // from an earlier Settings visit (this modal is often opened before that
+  // page ever loads), then fetch the current value to be sure.
+  function applyGlobalEngine(flavor) {
+    settings.runtime_flavor = flavor;
+    engineSel.innerHTML = `<option value="${flavor}">${ENGINE_LABELS[flavor] || flavor}</option>`;
+    engineSel.value = flavor;
+  }
+  applyGlobalEngine(state.globalRuntimeFlavor || settings.runtime_flavor || "llamacpp");
+  api("/api/settings").then((res) => {
+    const flavor = res.runtime?.runtime_flavor || "llamacpp";
+    state.globalRuntimeFlavor = flavor;
+    applyGlobalEngine(flavor);
+    renderGpuDeviceCards();
+    populateBackendDropdown();
+    syncAndPreview();
+  }).catch(() => {});
+
   gpuSel.value = settings.gpu_offload || "max";
   ctxSel.value = settings.context_length ? String(settings.context_length) : "32768";
   kvSel.value = settings.gpu_kv || "q8_0";
@@ -597,8 +692,16 @@ function openModelConfigModal(modelName) {
   const devicesWrap = document.getElementById("modal-gpu-devices-wrap");
   const devicesBox = document.getElementById("modal-gpu-devices");
   const devicesHint = document.getElementById("modal-gpu-devices-hint");
+  const devicesTitle = document.getElementById("modal-gpu-devices-title");
+  const strategyWrap = document.getElementById("modal-gpu-strategy-wrap");
+  const splitSel = document.getElementById("modal-cfg-split");
   let backendsList = [];
-  let physicalGpus = []; // [{name, total_mb, free_mb}] -- backend-agnostic, deduped by name
+  // [{name, total_mb, free_mb, sourceBackendLabel, sourceDeviceId}] --
+  // backend-agnostic (deduped by name) for the purposes of selection, but
+  // each entry remembers which backend it was actually enumerated under
+  // (and that backend's own device id) purely for display, matching how LM
+  // Studio's own Hardware page labels each card with its backend + deviceId.
+  let physicalGpus = [];
   let selectedGpuNames = new Set();
 
   // A backend can only be offered if it (a) actually launches on this
@@ -619,32 +722,88 @@ function openModelConfigModal(modelName) {
     return { compatible: true, reason: "" };
   }
 
-  function renderGpuDeviceChips() {
+  // The Compute Backend + GPU controls only actually DO anything for the
+  // llama.cpp runtime engine, since that's the one this app builds the
+  // literal launch command for (terminal / background process, real -dev /
+  // -sm flags). For LM Studio/Ollama/vLLM, the user's own app manages its
+  // GPU and backend settings -- there's no mechanism here to apply these
+  // selections there, so presenting them as live controls would be
+  // misleading. They stay visible (still useful reference info about what
+  // hardware is available) but disabled, with an explicit note.
+  function isLlamaCppEngine() {
+    return engineSel.value === "llamacpp";
+  }
+
+  function renderGpuDeviceCards() {
     if (physicalGpus.length === 0) {
       devicesWrap.style.display = "none";
       return;
     }
     devicesWrap.style.display = "block";
     devicesBox.innerHTML = "";
-    devicesHint.textContent = "Pick which GPU(s) this run should use — the Compute Backend choices below update to match.";
+    const gated = !isLlamaCppEngine();
+
+    const sourceLabel = physicalGpus[0].sourceBackendLabel;
+    const allSameSource = physicalGpus.every((g) => g.sourceBackendLabel === sourceLabel);
+    devicesTitle.textContent = allSameSource
+      ? `${physicalGpus.length} GPU${physicalGpus.length > 1 ? "s" : ""} Detected with ${sourceLabel}`
+      : `${physicalGpus.length} GPU(s) Detected`;
+
+    if (gated) {
+      const engineLabel = engineSel.options[engineSel.selectedIndex]?.text || engineSel.value;
+      devicesHint.textContent = `Reference only — ${engineLabel} manages its own GPU selection; this app doesn't control it there. Set the engine to llama.cpp in Settings & Engine to apply this selection directly.`;
+    } else {
+      devicesHint.textContent = "Pick which GPU(s) this run should use — the Compute Backend choices below update to match. Turning a GPU off excludes it from this run entirely.";
+    }
+
+    // Only one GPU selected disables the notion of a "split" -- the
+    // strategy dropdown only makes sense once there's actually more than
+    // one device to divide work across.
+    strategyWrap.style.display = !gated && selectedGpuNames.size > 1 ? "flex" : "none";
 
     physicalGpus.forEach((gpu) => {
       const isActive = selectedGpuNames.has(gpu.name);
-      const chip = document.createElement("div");
-      chip.className = "model-toggle-chip" + (isActive ? " active" : "");
-      chip.title = `${gpu.total_mb} MiB (${gpu.free_mb} MiB free)`;
-      chip.textContent = `${gpu.name} (${(gpu.total_mb / 1024).toFixed(1)}GB)`;
-      chip.onclick = () => {
-        if (isActive) {
-          if (selectedGpuNames.size > 1) selectedGpuNames.delete(gpu.name);
-        } else {
+      const card = document.createElement("div");
+      card.className = "gpu-device-card" + (gated ? " disabled" : "");
+
+      const info = document.createElement("div");
+      const nameEl = document.createElement("div");
+      nameEl.className = "gpu-device-card-name";
+      nameEl.textContent = gpu.name;
+      const metaEl = document.createElement("div");
+      metaEl.className = "gpu-device-card-meta";
+      metaEl.textContent = `VRAM Capacity: ${(gpu.total_mb / 1024).toFixed(2)} GB · ${gpu.sourceBackendLabel} · deviceId: ${gpu.sourceDeviceId}`;
+      info.appendChild(nameEl);
+      info.appendChild(metaEl);
+      card.appendChild(info);
+
+      const switchLabel = document.createElement("label");
+      switchLabel.className = "gpu-toggle-switch";
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.checked = isActive;
+      input.disabled = gated;
+      const slider = document.createElement("span");
+      slider.className = "gpu-toggle-slider";
+      input.onchange = () => {
+        if (input.checked) {
           selectedGpuNames.add(gpu.name);
+        } else if (selectedGpuNames.size > 1) {
+          selectedGpuNames.delete(gpu.name);
+        } else {
+          // Can't turn off the last remaining GPU -- revert visually.
+          input.checked = true;
+          return;
         }
-        renderGpuDeviceChips();
+        renderGpuDeviceCards();
         populateBackendDropdown();
         syncAndPreview();
       };
-      devicesBox.appendChild(chip);
+      switchLabel.appendChild(input);
+      switchLabel.appendChild(slider);
+      card.appendChild(switchLabel);
+
+      devicesBox.appendChild(card);
     });
   }
 
@@ -662,7 +821,16 @@ function openModelConfigModal(modelName) {
       const opt = document.createElement("option");
       opt.value = b.id;
       if (compatible) {
-        const deviceNote = b.devices && b.devices.length ? ` — ${b.devices.length} GPU${b.devices.length > 1 ? "s" : ""}` : "";
+        // ROCm enumerates every AMD card, but this app only ever hands it one
+        // (mixed GPU generations can't be combined under ROCm -- confirmed on
+        // RDNA2 + RDNA4 hardware). Saying "2 GPUs" unqualified implied both
+        // would be used together, which ROCm will not do here.
+        const n = (b.devices || []).length;
+        const deviceNote = n
+          ? b.id === "rocm" && n > 1
+            ? ` — ${n} GPUs (uses 1 at a time)`
+            : ` — ${n} GPU${n > 1 ? "s" : ""}`
+          : "";
         opt.textContent = `${b.label} (v${b.version})${deviceNote}`;
       } else {
         opt.disabled = true;
@@ -678,18 +846,44 @@ function openModelConfigModal(modelName) {
     const stillValid = Array.from(backendSel.options).some((o) => o.value === previousValue && !o.disabled);
     backendSel.value = stillValid ? previousValue : "";
     settings.backend = backendSel.value || null;
-    backendHint.textContent = reasons.join(" · ");
+
+    const gated = !isLlamaCppEngine();
+    backendSel.disabled = gated;
+    splitSel.disabled = gated;
+    if (gated) {
+      const engineLabel = engineSel.options[engineSel.selectedIndex]?.text || engineSel.value;
+      backendHint.textContent = `Not applied here — ${engineLabel} manages its own compute backend. This app only builds the launch command (and can set -dev/-sm) for the llama.cpp runtime engine.`;
+    } else {
+      backendHint.textContent = reasons.join(" · ");
+    }
+  }
+
+  // "Auto" in the dropdown must still resolve to a REAL, verified backend
+  // for the purposes of actually applying the user's GPU selection --
+  // leaving it unresolved (as an earlier version of this code did) meant a
+  // 1-GPU selection was silently ignored whenever Auto was picked, since
+  // there was no way to know which backend's device-id scheme to use.
+  // Preference order matches the legacy auto-pick's intent (Vulkan first),
+  // but unlike that legacy path, every candidate here is one this exact
+  // machine has already verified actually launches.
+  const BACKEND_PRIORITY = ["vulkan", "rocm", "cuda", "cpu"];
+  function bestVerifiedBackendId() {
+    for (const id of BACKEND_PRIORITY) {
+      const b = backendsList.find((x) => x.id === id);
+      if (b && computeCompatibility(b).compatible) return id;
+    }
+    return null;
   }
 
   // Translate the user's backend-agnostic GPU picks into the ACTUAL device
-  // ids the chosen backend's binary expects for -dev (e.g. "Vulkan0") --
-  // each backend enumerates its own ids, so this can only be resolved once
-  // a specific backend (not "Auto") is chosen. Selecting every detected GPU
-  // is the same as no restriction, so that maps to an empty list (no -dev
-  // flag at all), matching pre-existing default behavior exactly.
+  // ids the chosen (or auto-resolved) backend's binary expects for -dev
+  // (e.g. "Vulkan0"). Selecting every detected GPU is the same as no
+  // restriction, so that maps to an empty list (no -dev flag at all),
+  // matching pre-existing default behavior exactly.
   function resolveDeviceIdsForLaunch() {
-    if (!settings.backend) return [];
-    const backend = backendsList.find((b) => b.id === settings.backend);
+    const backendId = settings.backend || bestVerifiedBackendId();
+    if (!backendId) return [];
+    const backend = backendsList.find((b) => b.id === backendId);
     if (!backend || !backend.devices || backend.devices.length === 0) return [];
     if (selectedGpuNames.size === 0 || selectedGpuNames.size === physicalGpus.length) return [];
     return backend.devices.filter((d) => selectedGpuNames.has(d.name)).map((d) => d.id);
@@ -701,7 +895,9 @@ function openModelConfigModal(modelName) {
     const seen = new Map();
     backendsList.forEach((b) => {
       (b.devices || []).forEach((d) => {
-        if (!seen.has(d.name)) seen.set(d.name, { name: d.name, total_mb: d.total_mb, free_mb: d.free_mb });
+        if (!seen.has(d.name)) {
+          seen.set(d.name, { name: d.name, total_mb: d.total_mb, free_mb: d.free_mb, sourceBackendLabel: b.label, sourceDeviceId: d.id });
+        }
       });
     });
     physicalGpus = Array.from(seen.values());
@@ -710,9 +906,10 @@ function openModelConfigModal(modelName) {
         ? physicalGpus.filter((g) => settings.gpuSelection.includes(g.name)).map((g) => g.name)
         : physicalGpus.map((g) => g.name)
     );
-    renderGpuDeviceChips();
+    renderGpuDeviceCards();
     backendSel.value = settings.backend || "";
     populateBackendDropdown();
+    splitSel.value = settings.split_mode || "layer";
     syncAndPreview();
   }).catch(() => {
     backendSel.innerHTML = '<option value="">Auto (probe unavailable)</option>';
@@ -720,6 +917,11 @@ function openModelConfigModal(modelName) {
 
   backendSel.onchange = () => {
     settings.backend = backendSel.value || null;
+    syncAndPreview();
+  };
+
+  splitSel.onchange = () => {
+    settings.split_mode = splitSel.value;
     syncAndPreview();
   };
 
@@ -748,7 +950,22 @@ function openModelConfigModal(modelName) {
   function syncAndPreview() {
     settings.suites = Array.from(modalSelectedSuites);
     settings.gpuSelection = Array.from(selectedGpuNames);
+    // Resolve "Auto" (backendSel.value === "") to the concrete backend that
+    // will actually be used, BEFORE computing device ids -- otherwise the
+    // launch command sent to the server could end up picking a different
+    // backend than the one whose device ids we just computed here.
+    settings.backend = backendSel.value || bestVerifiedBackendId();
     settings.devices = resolveDeviceIdsForLaunch();
+    // Only recompute from GPU count once the backend/device probe has
+    // actually resolved (physicalGpus populated) -- syncAndPreview() also
+    // runs once synchronously before that fetch completes, when
+    // selectedGpuNames is still empty; treating "no data yet" the same as
+    // "single GPU" would force-write "none" and, since splitSel.value is
+    // seeded FROM settings.split_mode right after the fetch resolves, that
+    // wrong value would then lock itself in permanently.
+    if (physicalGpus.length > 0) {
+      settings.split_mode = selectedGpuNames.size > 1 ? (splitSel.value || "layer") : "none";
+    }
     settings.runtime_flavor = engineSel.value;
     settings.gpu_offload = gpuSel.value;
     settings.context_length = ctxSel.value ? parseInt(ctxSel.value, 10) : null;
@@ -787,7 +1004,9 @@ function openModelConfigModal(modelName) {
     };
   });
 
-  engineSel.onchange = syncAndPreview;
+  // engineSel is disabled and holds a single option (see applyGlobalEngine
+  // above) -- it never fires change events; the Compute Backend/GPU panels
+  // refresh their gated state from the /api/settings fetch instead.
   gpuSel.onchange = syncAndPreview;
   ctxSel.onchange = syncAndPreview;
   kvSel.onchange = syncAndPreview;
@@ -1144,52 +1363,109 @@ async function loadModelCatalog() {
 async function loadHardwareSpecs() {
   try {
     const specs = await api("/api/hardware/specs");
-    const gridEl = document.getElementById("hw-specs-grid");
-    const osBadge = document.getElementById("hw-os-badge");
-    const vendorBadges = document.getElementById("hw-vendor-badges");
+    // The old #hw-specs-grid / #hw-os-badge / #hw-vendor-badges panel was
+    // replaced by the header hardware pill and the telemetry summary below;
+    // its ~35 lines of DOM building were dead (the elements no longer exist).
+    // Record this machine's real VRAM so model-fit math and the filter pills
+    // describe the hardware actually present, instead of the developer's.
+    setVramProfileFromSpecs(specs);
 
-    if (gridEl) {
-      gridEl.innerHTML = "";
-      const gpus = Array.isArray(specs.gpu) ? specs.gpu : (specs.gpu ? [{ name: specs.gpu, memory: "" }] : []);
-      if (gpus.length > 1) {
-        gpus.forEach((g, idx) => {
-          const item = document.createElement("div");
-          item.className = "hw-spec-item";
-          item.style = "padding:6px 10px; background:var(--page); border-radius:6px; border:1px solid var(--border);";
-          item.innerHTML = `<span class="hw-label" style="font-size:11px; color:var(--text-muted); display:block;">🎴 GPU ${idx + 1}</span><span class="hw-value" style="font-size:12.5px; font-weight:600; color:var(--text);">${g.name || "GPU"}${g.memory ? ` (${g.memory})` : ""}</span>`;
-          gridEl.appendChild(item);
-        });
-      } else {
-        const g = gpus[0] || { name: "Standard Graphics", memory: "" };
-        const item = document.createElement("div");
-        item.className = "hw-spec-item";
-        item.style = "padding:6px 10px; background:var(--page); border-radius:6px; border:1px solid var(--border);";
-        item.innerHTML = `<span class="hw-label" style="font-size:11px; color:var(--text-muted); display:block;">🎴 GPU</span><span class="hw-value" id="hw-val-gpu" style="font-size:12.5px; font-weight:600; color:var(--text);">${g.name || "Standard Graphics"}${g.memory ? ` (${g.memory})` : ""}</span>`;
-        gridEl.appendChild(item);
-      }
-
-      const cpuItem = document.createElement("div");
-      cpuItem.className = "hw-spec-item";
-      cpuItem.style = "padding:6px 10px; background:var(--page); border-radius:6px; border:1px solid var(--border);";
-      const cores = specs.cpu_count_logical ? ` (${specs.cpu_count_logical} Threads)` : "";
-      cpuItem.innerHTML = `<span class="hw-label" style="font-size:11px; color:var(--text-muted); display:block;">🖥️ CPU</span><span class="hw-value" id="hw-val-cpu" style="font-size:12.5px; font-weight:600; color:var(--text);">${specs.cpu || "CPU"}${cores}</span>`;
-      gridEl.appendChild(cpuItem);
-
-      const ramItem = document.createElement("div");
-      ramItem.className = "hw-spec-item";
-      ramItem.style = "padding:6px 10px; background:var(--page); border-radius:6px; border:1px solid var(--border);";
-      ramItem.innerHTML = `<span class="hw-label" style="font-size:11px; color:var(--text-muted); display:block;">🧠 RAM</span><span class="hw-value" id="hw-val-ram" style="font-size:12.5px; font-weight:600; color:var(--text);">${specs.ram_total_gb ? `${specs.ram_total_gb} GB Total Memory` : "RAM"}</span>`;
-      gridEl.appendChild(ramItem);
-    }
     const headerHwText = document.getElementById("header-hw-text");
     if (headerHwText) {
       const gpus = Array.isArray(specs.gpu) ? specs.gpu : (specs.gpu ? [{ name: specs.gpu, memory: "" }] : []);
-      const gpuNames = gpus.map(g => g.name.replace("AMD Radeon ", "").replace("NVIDIA GeForce ", "").trim()).join(" + ");
-      const cpuShort = (specs.cpu || "CPU").replace(" Processor", "").replace(" 6-Core", "").trim();
+      // g.name can be missing on a partial probe result -- calling .replace()
+      // on undefined here used to throw and abort the whole specs render.
+      const gpuNames = gpus
+        .map((g) => String(g.name || "").replace("AMD Radeon ", "").replace("NVIDIA GeForce ", "").trim())
+        .filter(Boolean)
+        .join(" + ");
+      const cpuShort = (specs.cpu || "CPU").replace(" Processor", "").replace(/ \d+-Core/, "").trim();
       headerHwText.textContent = `${cpuShort} · ${gpuNames || "GPU"} · ${specs.ram_total_gb || ""}GB RAM`;
+    }
+
+    const telemetrySummary = document.getElementById("telemetry-gpu-summary");
+    if (telemetrySummary) {
+      const gpus = Array.isArray(specs.gpu) ? specs.gpu : [];
+      telemetrySummary.textContent = gpus
+        .map((g) => {
+          const nm = String(g?.name || "GPU").replace("AMD Radeon ", "").replace("NVIDIA GeForce ", "").trim();
+          return g?.memory ? `${nm} (${g.memory})` : nm;
+        })
+        .join(" + ");
     }
   } catch (e) {
     console.error("Hardware specs fetch failed", e);
+  }
+}
+
+/**
+ * Parse the hardware snapshot's GPU list into the VRAM numbers the model-fit
+ * UI needs, and relabel the filter pills to match.
+ *
+ * These were previously hardcoded to the development machine's cards (15.98
+ * and 23.96 GB, labelled "Fits RX 7800 XT (16GB)" / "Dual GPU (24GB)"), which
+ * meant every other machine got both wrong numbers and wrong labels -- a
+ * laptop with one 8GB card was still told models "fit in GPU 1" up to 16GB.
+ *
+ * hardware.gpu[].memory is a preformatted string like "15.98 GB" (see
+ * get_hardware_snapshot); anything unparseable is skipped rather than
+ * poisoning the totals with NaN.
+ */
+function setVramProfileFromSpecs(specs) {
+  const gpus = Array.isArray(specs?.gpu) ? specs.gpu : [];
+  const sizes = gpus
+    .map((g) => {
+      const m = /([0-9.]+)\s*GB/i.exec(String(g?.memory || ""));
+      return m ? parseFloat(m[1]) : NaN;
+    })
+    .filter((n) => Number.isFinite(n) && n > 0);
+
+  if (sizes.length === 0) {
+    // No usable VRAM reading (no discrete GPU, a failed probe, or macOS
+    // unified memory). Leave state.vram null -- callers fall back to
+    // size-only display and skip the GPU-fit filters entirely.
+    state.vram = null;
+  } else {
+    state.vram = {
+      primaryGB: Math.max(...sizes),
+      totalGB: sizes.reduce((a, b) => a + b, 0),
+      gpuCount: sizes.length,
+    };
+  }
+  updateVramFilterPills(specs);
+}
+
+function updateVramFilterPills(specs) {
+  const gpus = Array.isArray(specs?.gpu) ? specs.gpu : [];
+  const pillGpu1 = document.querySelector('.filter-pill[data-filter="gpu1"]');
+  const pillDual = document.querySelector('.filter-pill[data-filter="dual"]');
+  const v = state.vram;
+
+  if (pillGpu1) {
+    if (v) {
+      // Name the biggest card, since that's the one primaryGB refers to.
+      const biggest = gpus.find((g) => {
+        const m = /([0-9.]+)\s*GB/i.exec(String(g?.memory || ""));
+        return m && Math.abs(parseFloat(m[1]) - v.primaryGB) < 0.01;
+      });
+      const label = String(biggest?.name || "GPU").replace("AMD Radeon ", "").replace("NVIDIA GeForce ", "").trim();
+      pillGpu1.innerHTML = `⚡ Fits ${escapeHtml(label)} (${Math.round(v.primaryGB)}GB) <span class="pill-count" id="pill-count-gpu1">0</span>`;
+      pillGpu1.style.display = "";
+    } else {
+      pillGpu1.style.display = "none";
+    }
+  }
+
+  if (pillDual) {
+    // A multi-GPU "fits across all cards" bucket only means anything when
+    // there is more than one card to spread across.
+    if (v && v.gpuCount > 1) {
+      pillDual.innerHTML = `🔥 All GPUs (${Math.round(v.totalGB)}GB) <span class="pill-count" id="pill-count-dual">0</span>`;
+      pillDual.style.display = "";
+    } else {
+      pillDual.style.display = "none";
+      if (state.modelFilter === "dual") state.modelFilter = "all";
+    }
   }
 }
 
@@ -1245,129 +1521,35 @@ async function loadConfig() {
   if (suiteChecklistEl) {
     renderSuiteGrid(suiteChecklistEl, state.config.suites, state.selectedSuites);
   }
-  await loadFrontierJudgeCard();
+  await loadJudgeState();
   updateRunScopeBar();
 }
 
-async function loadFrontierJudgeCard() {
-  const card = document.getElementById("frontier-judge-card");
-  if (!card) return;
-  const disabledNote = document.getElementById("frontier-judge-disabled-note");
-  const disabledText = document.getElementById("frontier-judge-disabled-text");
+/**
+ * Populate state.judgeSettings / judgeKeys / judgeSdks from /api/settings.
+ *
+ * executeBenchmarkRun() decides whether a run includes the paid frontier
+ * suite purely from `state.judgeSettings?.enabled`, so this state is what
+ * actually enables the judge. It used to be set inside a function that
+ * rendered the old New Run tab's judge card and bailed out with
+ * `if (!card) return` when that card was absent -- and since the card was
+ * removed in the modal redesign, the bail-out hit every time and the state
+ * was never populated. The result was a frontier judge that could never fire
+ * no matter what Settings said (verified live: state.judgeSettings === null).
+ *
+ * Fetching the settings is therefore kept strictly separate from rendering
+ * any optional UI.
+ */
+async function loadJudgeState() {
   try {
     const settings = await api("/api/settings");
     state.judgeSettings = settings.judge;
     state.judgeKeys = settings.keys;
     state.judgeSdks = settings.sdks || null;
     state.judgeSdkPackages = settings.sdk_packages || null;
-    const provider = settings.judge.provider || "anthropic";
-    const hasKeyForProvider = !!settings.keys[provider];
-
-    if (settings.judge.enabled && hasKeyForProvider) {
-      card.style.display = "block";
-      disabledNote.style.display = "none";
-      document.getElementById("run-judge-provider").value = provider;
-      document.getElementById("run-judge-model").value = settings.judge.model || "";
-      await Promise.all([loadJudgeModelOptions(provider), updateFrontierJudgeInfo()]);
-    } else {
-      card.style.display = "none";
-      disabledNote.style.display = "block";
-      // Diagnose exactly what's missing rather than one generic message --
-      // "not enabled" and "no key for the selected provider" are different
-      // problems with different fixes, and it's easy to fix one while
-      // forgetting the other (e.g. picking + saving a provider/model
-      // without separately checking "Enabled").
-      const missing = [];
-      if (!settings.judge.enabled) missing.push('the "Enabled" checkbox is unchecked');
-      // provider is escaped: it originates from config.yaml, which a user can
-      // hand-edit to anything, and this string goes into innerHTML.
-      if (!hasKeyForProvider) missing.push(`no API key is set for ${escapeHtml(PROVIDER_LABELS[provider] || provider)} (the currently configured provider)`);
-      disabledText.innerHTML =
-        `Frontier judge isn't active yet: ${missing.join(" and ")}. Fix this in ` +
-        `<a href="#" data-view-link="settings">Settings</a> to unlock an optional 7th, paid, non-deterministic suite.`;
-    }
   } catch {
-    card.style.display = "none";
-    disabledNote.style.display = "none";
-  }
-}
-
-async function updateFrontierJudgeInfo() {
-  const provider = document.getElementById("run-judge-provider").value;
-  const model = document.getElementById("run-judge-model").value.trim();
-  const includeEl = document.getElementById("include-frontier-graded");
-  const detailEl = document.getElementById("frontier-judge-detail");
-  const estimateEl = document.getElementById("frontier-judge-estimate");
-  const numTasks = state.judgeSettings?.num_tasks ?? 6;
-  const passThreshold = state.judgeSettings?.pass_threshold ?? 7;
-
-  const costEl2 = document.getElementById("frontier-judge-cost");
-  const hasKey = !!(state.judgeKeys && state.judgeKeys[provider]);
-  if (!hasKey) {
-    includeEl.checked = false;
-    includeEl.disabled = true;
-    detailEl.textContent = `No API key set for ${PROVIDER_LABELS[provider] || provider} -- add one in Settings to use it as the judge.`;
-    estimateEl.textContent = "";
-    if (costEl2) costEl2.textContent = "";
-    return;
-  }
-  // A key alone isn't enough: each provider's SDK is an optional install, so
-  // check it here rather than letting the run die on its first judge call.
-  const sdkOk = !state.judgeSdks || state.judgeSdks[provider] !== false;
-  if (!sdkOk) {
-    const pkg = (state.judgeSdkPackages && state.judgeSdkPackages[provider]) || provider;
-    includeEl.checked = false;
-    includeEl.disabled = true;
-    detailEl.textContent =
-      `The ${PROVIDER_LABELS[provider] || provider} SDK isn't installed, so this judge can't run yet. ` +
-      `Install it with:  pip install ${pkg}`;
-    estimateEl.textContent = "";
-    if (costEl2) costEl2.textContent = "";
-    return;
-  }
-  includeEl.disabled = false;
-  detailEl.textContent =
-    `${numTasks} task(s), pass threshold ${passThreshold}/10 -- exactly ${numTasks * 2} paid API calls ` +
-    `(${numTasks} to generate tasks + ${numTasks} to grade responses). Generates its own tasks and grades this ` +
-    `model's responses; kept separate from the deterministic pass rates. See TASK_SPEC.md.`;
-
-  const costEl = document.getElementById("frontier-judge-cost");
-  if (!model) {
-    estimateEl.textContent = "";
-    costEl.textContent = "";
-    return;
-  }
-  estimateEl.textContent = "Checking for time estimate from a previous run with this judge...";
-  costEl.textContent = "";
-  try {
-    const history = await api(`/api/settings/judge/history?provider=${encodeURIComponent(provider)}&model=${encodeURIComponent(model)}`);
-    if (history.found) {
-      const totalSeconds = history.avg_seconds_per_task * numTasks;
-      estimateEl.textContent =
-        `Estimated duration: ~${fmtDuration(totalSeconds)}, based on ${fmtNum(history.avg_seconds_per_task, 1)}s/task ` +
-        `observed in a previous run (${history.run_id}) with this same judge. Actual time varies with prompt/response length.`;
-    } else {
-      estimateEl.textContent =
-        "No previous run with this exact provider/model yet -- duration can't be estimated until after the first run. " +
-        "Task and call counts above are exact regardless.";
-    }
-  } catch {
-    estimateEl.textContent = "";
-  }
-
-  try {
-    const cost = await api(
-      `/api/settings/judge/cost-estimate?provider=${encodeURIComponent(provider)}&model=${encodeURIComponent(model)}&num_tasks=${numTasks}`
-    );
-    if (cost.available) {
-      costEl.textContent =
-        `Estimated cost: ~$${cost.total_cost_usd} (OpenRouter's live pricing: $${cost.prompt_rate_per_1m}/$${cost.completion_rate_per_1m} per 1M ` +
-        `prompt/completion tokens, applied to real token usage from run ${cost.based_on_run}).`;
-    } else {
-      costEl.textContent = cost.reason;
-    }
-  } catch {
-    costEl.textContent = "";
+    // Leave whatever was there; a failed settings fetch must not silently
+    // flip the judge on or off.
   }
 }
 
@@ -1521,7 +1703,7 @@ function initModelPicker(pickerId, menuId) {
   });
 }
 
-async function loadJudgeModelOptions(provider, pickerId = "run-judge-model", statusId = "frontier-judge-model-status") {
+async function loadJudgeModelOptions(provider, pickerId = "settings-judge-model", statusId = "settings-judge-model-status") {
   const statusEl = document.getElementById(statusId);
   const p = pickerState[pickerId];
   statusEl.textContent = "Loading available models...";
@@ -1543,20 +1725,9 @@ async function loadJudgeModelOptions(provider, pickerId = "run-judge-model", sta
   }
 }
 
-initModelPicker("run-judge-model", "run-judge-model-menu");
+// Only the Settings judge picker still exists; the New Run tab's copy was
+// removed with that tab.
 initModelPicker("settings-judge-model", "settings-judge-model-menu");
-
-async function onJudgeProviderChange() {
-  const provider = document.getElementById("run-judge-provider").value;
-  const modelInput = document.getElementById("run-judge-model");
-  // Switching provider invalidates whatever model string was there before
-  // (e.g. an Anthropic model id left in the field after switching to
-  // Gemini) -- restore the saved default only if it's for this exact
-  // provider, otherwise clear it so a stale/mismatched value is never
-  // silently submitted.
-  modelInput.value = state.judgeSettings?.provider === provider ? (state.judgeSettings.model || "") : "";
-  await Promise.all([loadJudgeModelOptions(provider), updateFrontierJudgeInfo()]);
-}
 
 function fmtDuration(seconds) {
   if (seconds < 60) return `${Math.round(seconds)}s`;
@@ -1564,9 +1735,6 @@ function fmtDuration(seconds) {
   const rem = Math.round(seconds % 60);
   return `${minutes}m ${rem}s`;
 }
-
-document.getElementById("run-judge-provider")?.addEventListener("change", onJudgeProviderChange);
-document.getElementById("run-judge-model")?.addEventListener("change", updateFrontierJudgeInfo);
 
 document.addEventListener("click", (e) => {
   const link = e.target.closest("[data-view-link]");
@@ -1716,11 +1884,41 @@ function updateTelemetryHUD(data) {
   const stageTaskLabel = document.getElementById("stage-task-label");
   const stageModelName = document.getElementById("stage-hero-model-name");
 
-  if (stageTokSec && data.live_tokens_per_sec != null) {
-    stageTokSec.textContent = `⚡ ${fmtNum(data.live_tokens_per_sec, 1)} tok/s`;
+  // These figures are per-problem: they update when a problem FINISHES, not
+  // continuously, so during a long task (a 4096-token decode, or a big
+  // prefill probe) the HUD legitimately sits on the previous problem's value
+  // for a while. Labelling which problem produced it makes that visible
+  // instead of looking like a frozen or wrong readout.
+  const liveId = data.live_problem_id || "";
+  const isPrefillProbe = liveId.startsWith("prefill_");
+  const stagePrefill = document.getElementById("stage-prefill-sec");
+  const prefillLabel = document.getElementById("stage-prefill-label");
+  const tokLabel = document.getElementById("stage-tok-label");
+
+  // Both metrics are shown at once and each retains its last real reading.
+  // A prefill probe's decode rate is structurally tiny (8 tokens over a
+  // latency dominated by processing thousands of prompt tokens -- e.g. 1.2
+  // tok/s while the model genuinely decodes at ~61), so it is NOT written
+  // into the generation figure; likewise a decode task's prefill number is
+  // measured over a trivial prompt and is not representative, so it does not
+  // overwrite a real prefill reading.
+  if (stagePrefill && isPrefillProbe && data.live_prefill_tokens_per_sec != null) {
+    stagePrefill.textContent = `⚡ ${fmtNum(data.live_prefill_tokens_per_sec, 0)} tok/s`;
+    stagePrefill.title = `Prompt-processing throughput, from prefill probe '${liveId}'.`;
+    if (prefillLabel) prefillLabel.textContent = `Prefill Speed (${liveId.replace("prefill_", "")})`;
   }
+
+  if (stageTokSec && !isPrefillProbe && data.live_tokens_per_sec != null) {
+    stageTokSec.textContent = `⚡ ${fmtNum(data.live_tokens_per_sec, 1)} tok/s`;
+    stageTokSec.title = `Decode speed from '${liveId}'. Updates per task, not continuously.`;
+    if (tokLabel) tokLabel.textContent = "Generation Speed";
+  }
+
   if (stageTtft && data.live_ttft_seconds != null) {
     stageTtft.textContent = `⏱️ ${fmtNum(data.live_ttft_seconds, 2)}s`;
+    stageTtft.title = liveId
+      ? `Time to first token on the last completed task ('${liveId}').`
+      : "Time to first token on the last completed task.";
   }
 
   const lastLine = data.log[data.log.length - 1] || "";
@@ -1819,6 +2017,7 @@ function pollRun() {
       } else {
         if (logEl) logEl.innerHTML += `\n\n<span class="log-pass">✓ Completed All Suites — saved as run ${escapeHtml(data.result_run_id)}</span>`;
       }
+      showRunFinishedActions(data);
       return;
     }
 
@@ -1826,6 +2025,55 @@ function pollRun() {
     state.pollTimer = setTimeout(poll, delay);
   };
   poll();
+}
+
+/**
+ * Surface the obvious next steps once a run ends (finished, errored or
+ * cancelled).
+ *
+ * Previously the stage just froze on its final log line: "Stop Run" stayed
+ * visible even though there was nothing left to stop, and the only way back
+ * was a small always-present "Back to Model Library" link at the top, which
+ * reads as navigation rather than "your run is done, here's what's next".
+ */
+function showRunFinishedActions(data) {
+  state.activeRunId = null;
+
+  const stopBtn = document.getElementById("stop-run");
+  if (stopBtn) stopBtn.style.display = "none";
+
+  const bar = document.getElementById("run-finished-actions");
+  if (!bar) return;
+  bar.innerHTML = "";
+  bar.style.display = "flex";
+
+  const again = document.createElement("button");
+  again.className = "primary";
+  again.textContent = "← Back to Model Library";
+  again.title = "Pick a model and configure another run";
+  again.onclick = () => {
+    bar.style.display = "none";
+    if (stopBtn) stopBtn.style.display = "";
+    switchToModelSelectionStage();
+  };
+  bar.appendChild(again);
+
+  // Only offer results when a run actually saved some -- a cancelled or
+  // failed run has no result_run_id and linking to nothing would be worse
+  // than not offering it.
+  if (data && data.result_run_id && !data.error) {
+    const view = document.createElement("button");
+    view.className = "secondary";
+    view.textContent = "📊 View Results";
+    view.onclick = () => {
+      bar.style.display = "none";
+      if (stopBtn) stopBtn.style.display = "";
+      switchToModelSelectionStage();
+      switchView("history");
+      showRunDetail(data.result_run_id);
+    };
+    bar.appendChild(view);
+  }
 }
 
 // Background Resource Optimization: Instantly refresh when user focuses tab
@@ -2917,6 +3165,274 @@ state.compareSearchQuery = "";
 state.compareProviderFilter = "";
 state.compareViewMode = "dedup";
 
+// Must stay in sync with _PREFILL_TIERS in
+// localbench/data/hardware_perf_problems.py. Tiers a run skipped (because
+// they exceeded that model's context window) simply render as "—".
+const HW_PREFILL_TIERS = [
+  { id: "prefill_tiny", label: "~200 tok" },
+  { id: "prefill_small", label: "~1k tok" },
+  { id: "prefill_medium", label: "~4k tok" },
+  { id: "prefill_large", label: "~8k tok" },
+  { id: "prefill_xl", label: "~16k tok" },
+  { id: "prefill_xxl", label: "~32k tok" },
+];
+const HW_DECODE_TIERS = [
+  { id: "decode_short", label: "1024 gen" },
+  { id: "decode_long", label: "4096 gen" },
+];
+
+async function loadHardwareCompare() {
+  const out = document.getElementById("hardware-compare-output");
+  if (!out) return;
+  out.innerHTML = '<p class="empty-state">Loading hardware comparison…</p>';
+  try {
+    const { entries } = await api("/api/hardware/compare");
+    if (!entries || entries.length === 0) {
+      out.innerHTML = '<p class="empty-state">No hardware_perf results yet — run a benchmark with the Hardware Performance suite enabled (it\'s on by default) to populate this comparison.</p>';
+      return;
+    }
+
+    // Default to newest-first. Re-running the same model with a different
+    // backend or GPU selection is the main reason to look at this table, and
+    // ordering purely by speed buried the chronology of those attempts --
+    // you could not see which settings you tried most recently. Speed
+    // ranking is still available, just no longer the only option.
+    const sortMode = state.hwSortMode || "date";
+    const decodeOf = (e) =>
+      e.problems.decode_long?.tokens_per_sec ?? e.problems.decode_short?.tokens_per_sec ?? 0;
+    if (sortMode === "speed") {
+      entries.sort((a, b) => decodeOf(b) - decodeOf(a));
+    } else {
+      entries.sort((a, b) =>
+        String(b.started_at || b.run_id || "").localeCompare(String(a.started_at || a.run_id || ""))
+      );
+    }
+
+    const rows = entries.map((e) => {
+      const prefillCells = HW_PREFILL_TIERS.map((tier) => {
+        const p = e.problems[tier.id];
+        return `<td style="text-align:right; padding:8px;">${p ? fmtNum(p.prefill_tokens_per_sec, 0) : "—"}</td>`;
+      }).join("");
+      const decodeCells = HW_DECODE_TIERS.map((tier) => {
+        const p = e.problems[tier.id];
+        return `<td style="text-align:right; padding:8px;">${p ? fmtNum(p.tokens_per_sec, 1) : "—"}</td>`;
+      }).join("");
+      const ttftP = e.problems.prefill_tiny;
+      const rli = e.runtime_load_info || {};
+      const { text: gpuNote, title: gpuTitle } = describeRunGpus(rli, e.hardware);
+      const BACKEND_LABELS = { vulkan: "Vulkan", rocm: "ROCm", cuda: "CUDA", cpu: "CPU" };
+      const engineNote = (rli.backend && (BACKEND_LABELS[rli.backend] || rli.backend)) || rli.engine || rli.runtime;
+      return `
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:8px;">
+            <div style="font-weight:600; color:var(--text);">${escapeHtml(e.model)}</div>
+            <div style="font-size:11px; color:var(--text-muted);" title="${escapeHtml(gpuTitle)}">${escapeHtml(gpuNote)}${engineNote ? " · " + escapeHtml(engineNote) : ""}</div>
+          </td>
+          ${prefillCells}
+          ${decodeCells}
+          <td style="text-align:right; padding:8px;">${ttftP ? fmtNum(ttftP.ttft_seconds, 2) + "s" : "—"}</td>
+          <td style="padding:8px; font-size:11px; color:var(--text-muted); white-space:nowrap;">${escapeHtml(e.started_at ? e.started_at.slice(0, 16).replace("T", " ") : e.run_id)}</td>
+        </tr>`;
+    }).join("");
+
+    out.innerHTML = `
+      <div style="overflow-x:auto;">
+        <table style="width:100%; border-collapse:collapse; font-size:12.5px;">
+          <thead>
+            <tr style="text-align:left; color:var(--text-muted); font-size:10.5px; text-transform:uppercase; letter-spacing:0.4px;">
+              <th style="padding:6px 8px;">Model</th>
+              <th colspan="${HW_PREFILL_TIERS.length}" style="padding:6px 8px; text-align:center; border-left:2px solid var(--border-strong, var(--border));">Prefill — prompt tok/s ↑</th>
+              <th colspan="${HW_DECODE_TIERS.length}" style="padding:6px 8px; text-align:center; border-left:2px solid var(--border-strong, var(--border));">Decode — generated tok/s ↑</th>
+              <th style="padding:6px 8px; border-left:2px solid var(--border-strong, var(--border));">TTFT ↓</th>
+              <th style="padding:6px 8px; border-left:2px solid var(--border-strong, var(--border));">Run</th>
+            </tr>
+            <tr style="text-align:right; color:var(--text-muted); font-size:10.5px; border-bottom:1px solid var(--border);">
+              <th style="padding:2px 8px; text-align:left; font-weight:500; text-transform:none;">prompt size →</th>
+              ${HW_PREFILL_TIERS.map((t, i) => `<th style="padding:2px 8px; font-weight:500;${i === 0 ? " border-left:2px solid var(--border-strong, var(--border));" : ""}">${t.label}</th>`).join("")}
+              ${HW_DECODE_TIERS.map((t, i) => `<th style="padding:2px 8px; font-weight:500;${i === 0 ? " border-left:2px solid var(--border-strong, var(--border));" : ""}">${t.label}</th>`).join("")}
+              <th style="border-left:2px solid var(--border-strong, var(--border));"></th>
+              <th style="border-left:2px solid var(--border-strong, var(--border));"></th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+        <div class="muted" style="font-size:11px; margin-top:8px;">
+          ↑ higher is better &nbsp;·&nbsp; ↓ lower is better &nbsp;·&nbsp;
+          "—" means that probe didn't run (a prompt tier larger than the model's configured context window is skipped).
+        </div>
+      </div>
+    `;
+
+    renderHardwareSpeedChart(out, entries);
+  } catch (e) {
+    out.innerHTML = `<p class="empty-state">Failed to load hardware comparison: ${escapeHtml(e.message)}</p>`;
+  }
+}
+
+// Metrics the speed chart can rank models by. `lowerBetter` flips the sort so
+// the best result is always the top bar, whichever direction "good" runs in.
+const HW_CHART_METRICS = [
+  { key: "decode_long", label: "Decode speed — 4096 tokens generated", unit: "tok/s", digits: 1, get: (e) => e.problems.decode_long?.tokens_per_sec },
+  { key: "decode_short", label: "Decode speed — 1024 tokens generated", unit: "tok/s", digits: 1, get: (e) => e.problems.decode_short?.tokens_per_sec },
+  ...HW_PREFILL_TIERS.map((t) => ({
+    key: t.id,
+    label: `Prefill speed — ${t.label} prompt`,
+    unit: "tok/s",
+    digits: 0,
+    get: (e) => e.problems[t.id]?.prefill_tokens_per_sec,
+  })),
+  { key: "ttft", label: "Time to first token (small prompt)", unit: "s", digits: 2, lowerBetter: true, get: (e) => e.problems.prefill_tiny?.ttft_seconds },
+];
+
+/**
+ * Horizontal bar chart ranking the loaded runs on one speed metric.
+ *
+ * Horizontal (not vertical) because the labels are model names plus their
+ * backend/GPU, which are far too long to sit legibly under vertical bars.
+ * One metric at a time and a single value axis: prefill and decode differ by
+ * an order of magnitude, so plotting them together would flatten the smaller
+ * one into invisibility.
+ */
+function renderHardwareSpeedChart(container, entries) {
+  const metric = HW_CHART_METRICS.find((m) => m.key === state.hwChartMetric) || HW_CHART_METRICS[0];
+
+  const points = entries
+    .map((e) => ({
+      value: metric.get(e),
+      model: e.model,
+      sub: describeRunGpus(e.runtime_load_info || {}, e.hardware).text,
+      when: e.started_at ? e.started_at.slice(0, 16).replace("T", " ") : e.run_id,
+    }))
+    .filter((p) => typeof p.value === "number" && isFinite(p.value) && p.value > 0)
+    .sort((a, b) => (metric.lowerBetter ? a.value - b.value : b.value - a.value));
+
+  const card = document.createElement("div");
+  card.style = "margin-top:18px; padding-top:16px; border-top:1px solid var(--border);";
+
+  const head = document.createElement("div");
+  head.className = "row";
+  head.style = "justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:12px;";
+  const h = document.createElement("h3");
+  h.style = "margin:0; font-size:13px;";
+  h.textContent = "📊 Speed comparison";
+  head.appendChild(h);
+
+  const sel = document.createElement("select");
+  sel.style = "font-size:11.5px; padding:4px 8px;";
+  HW_CHART_METRICS.forEach((m) => {
+    const o = document.createElement("option");
+    o.value = m.key;
+    o.textContent = m.label;
+    if (m.key === metric.key) o.selected = true;
+    sel.appendChild(o);
+  });
+  sel.onchange = () => {
+    state.hwChartMetric = sel.value;
+    loadHardwareCompare();
+  };
+  head.appendChild(sel);
+  card.appendChild(head);
+
+  if (points.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "empty-state";
+    empty.textContent = "No runs recorded this measurement yet.";
+    card.appendChild(empty);
+    container.appendChild(card);
+    return;
+  }
+
+  const rowH = 34, gap = 8, labelW = 250, valueW = 78, padR = 12;
+  const width = 900;
+  const height = points.length * (rowH + gap) + 8;
+  const barMax = width - labelW - valueW - padR;
+  const scaleMax = Math.max(...points.map((p) => p.value));
+
+  const svgNs = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(svgNs, "svg");
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  svg.setAttribute("class", "chart-svg");
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", `${metric.label}, ranked`);
+  svg.style.width = "100%";
+  svg.style.height = "auto";
+
+  points.forEach((p, i) => {
+    const y = i * (rowH + gap);
+    const barW = Math.max(2, (p.value / scaleMax) * barMax);
+
+    const name = document.createElementNS(svgNs, "text");
+    name.setAttribute("x", 0);
+    name.setAttribute("y", y + 14);
+    name.setAttribute("fill", "var(--text)");
+    name.setAttribute("font-size", "12");
+    name.setAttribute("font-weight", "600");
+    name.textContent = p.model.length > 30 ? p.model.slice(0, 29) + "…" : p.model;
+    svg.appendChild(name);
+
+    const sub = document.createElementNS(svgNs, "text");
+    sub.setAttribute("x", 0);
+    sub.setAttribute("y", y + 28);
+    sub.setAttribute("fill", "var(--text-muted)");
+    sub.setAttribute("font-size", "10");
+    sub.textContent = (p.sub || "").length > 40 ? p.sub.slice(0, 39) + "…" : p.sub || "";
+    svg.appendChild(sub);
+
+    const track = document.createElementNS(svgNs, "rect");
+    track.setAttribute("x", labelW);
+    track.setAttribute("y", y + 6);
+    track.setAttribute("width", barMax);
+    track.setAttribute("height", 20);
+    track.setAttribute("rx", 4);
+    track.setAttribute("fill", "var(--page)");
+    svg.appendChild(track);
+
+    const bar = document.createElementNS(svgNs, "rect");
+    bar.setAttribute("x", labelW);
+    bar.setAttribute("y", y + 6);
+    bar.setAttribute("width", barW);
+    bar.setAttribute("height", 20);
+    bar.setAttribute("rx", 4);
+    bar.setAttribute("fill", seriesColor(i));
+    const t = document.createElementNS(svgNs, "title");
+    t.textContent = `${p.model} — ${fmtNum(p.value, metric.digits)} ${metric.unit} (${p.when})`;
+    bar.appendChild(t);
+    svg.appendChild(bar);
+
+    // Direct value labels: with a handful of bars this reads faster than
+    // making the eye trace back to an axis.
+    const val = document.createElementNS(svgNs, "text");
+    val.setAttribute("x", labelW + barW + 8);
+    val.setAttribute("y", y + 21);
+    val.setAttribute("fill", "var(--text)");
+    val.setAttribute("font-size", "12");
+    val.setAttribute("font-weight", "700");
+    val.textContent = `${fmtNum(p.value, metric.digits)} ${metric.unit}`;
+    svg.appendChild(val);
+  });
+
+  const wrap = document.createElement("div");
+  wrap.style = "overflow-x:auto;";
+  wrap.appendChild(svg);
+  card.appendChild(wrap);
+
+  const note = document.createElement("div");
+  note.className = "muted";
+  note.style = "font-size:11px; margin-top:8px;";
+  note.textContent = metric.lowerBetter
+    ? "Sorted fastest (lowest) first. Bar length is relative to the slowest result shown."
+    : "Sorted fastest (highest) first. Bar length is relative to the fastest result shown.";
+  card.appendChild(note);
+
+  container.appendChild(card);
+}
+
+document.getElementById("hardware-compare-refresh")?.addEventListener("click", loadHardwareCompare);
+document.getElementById("hardware-sort")?.addEventListener("change", (e) => {
+  state.hwSortMode = e.target.value;
+  loadHardwareCompare();
+});
+
 async function loadComparePicker() {
   const runs = await api("/api/runs");
   const picker = document.getElementById("compare-run-picker");
@@ -3093,14 +3609,30 @@ async function loadComparePicker() {
       const thisModelObj = Object.values(thisRun.models)[0];
 
       if (baseModelObj && thisModelObj) {
+        // Average over the deterministic accuracy suites that BOTH runs
+        // actually have. Two earlier problems are fixed here:
+        //   1. hardware_perf passes ~100% by construction (it grades speed,
+        //      not correctness) and frontier_graded is non-deterministic --
+        //      folding either into a "pass rate" dilutes real accuracy gaps.
+        //   2. Averaging each run over its own suite set compared different
+        //      denominators. Now that suites are selectable per run, one run
+        //      having hardware_perf and the other not was enough to make the
+        //      delta meaningless.
+        const shared = DETERMINISTIC_SUITE_ORDER.filter(
+          (s) => baseModelObj.suites?.[s] && thisModelObj.suites?.[s]
+        );
         const getMeanPass = (mObj) => {
-          const suites = Object.values(mObj.suites || {});
-          if (suites.length === 0) return 0;
-          return suites.reduce((acc, s) => acc + (s.pass_rate || 0), 0) / suites.length;
+          if (shared.length === 0) return null;
+          return shared.reduce((acc, s) => acc + (mObj.suites[s].pass_rate || 0), 0) / shared.length;
         };
 
         const basePass = getMeanPass(baseModelObj);
         const thisPass = getMeanPass(thisModelObj);
+        // No accuracy suite in common means there is genuinely nothing to
+        // compare -- render no badge rather than a fabricated "+0%". Note this
+        // must NOT early-return: the card itself is appended to the picker
+        // further below, so bailing out here would drop the run from the list.
+        if (basePass !== null && thisPass !== null) {
         // 1 decimal, not a whole-number round -- see fmtPct's comment: a
         // small but real delta shouldn't collapse to "+0%" against baseline.
         const diffPassRaw = Math.round((thisPass - basePass) * 1000) / 10;
@@ -3114,7 +3646,9 @@ async function loadComparePicker() {
           deltaBadge.className = "delta-badge worse";
           deltaBadge.textContent = `🔴 ${Math.abs(diffPassRaw).toFixed(Number.isInteger(diffPassRaw) ? 0 : 1)}% pass`;
         }
+        deltaBadge.title = `Mean pass rate across ${shared.length} accuracy suite(s) present in both runs: ${shared.join(", ")}`;
         actions.appendChild(deltaBadge);
+        }
       }
     }
 
@@ -4164,10 +4698,26 @@ async function renderCompare() {
           let vsBaselineStr = "";
           if (state.baselineRunId && compareRunCache.has(state.baselineRunId)) {
             const baseRun = compareRunCache.get(state.baselineRunId);
-            const baseModelObj = Object.values(baseRun.models || {})[0];
+            // Honour the explicitly chosen baseline model; falling back to
+            // "the first model in the run" silently compared against the
+            // wrong model whenever a baseline run contained more than one.
+            const baseModelObj =
+              (state.baselineModelName && baseRun.models?.[state.baselineModelName]) ||
+              Object.values(baseRun.models || {})[0];
             if (baseModelObj && baseModelObj.suites) {
-              const sVals = Object.values(baseModelObj.suites);
-              const baseMean = sVals.reduce((acc, s) => acc + (s.pass_rate || 0), 0) / (sVals.length || 1);
+              // Average over the SAME suite set as topAccItem.meanPass above
+              // (`categories`, i.e. the deterministic accuracy suites).
+              // Previously this averaged every suite present, so hardware_perf
+              // (a speed suite that passes ~100% by construction) and
+              // frontier_graded were folded into the baseline but not into the
+              // model being compared -- an apples-to-oranges delta that
+              // inflated the baseline and understated any real lead.
+              const baseVals = categories
+                .map((cat) => baseModelObj.suites[cat])
+                .filter(Boolean);
+              const baseMean = baseVals.length
+                ? baseVals.reduce((acc, s) => acc + (s.pass_rate || 0), 0) / baseVals.length
+                : 0;
               // 1 decimal, not a whole-number round -- see fmtPct's comment:
               // a small but real lead over the baseline shouldn't collapse
               // to "+0%" just because it rounds away as a whole number.
@@ -4531,11 +5081,17 @@ function apiErrorDetail(err) {
   }
 }
 
+const ENGINE_LABELS = { llamacpp: "llama.cpp", lmstudio: "LM Studio", ollama: "Ollama", vllm: "vLLM" };
+
 async function loadSettings() {
   const data = await api("/api/settings");
   document.getElementById("settings-base-url").value = data.runtime.base_url || "";
   document.getElementById("settings-timeout").value = data.runtime.request_timeout_seconds ?? "";
   document.getElementById("settings-unload-cmd").value = data.runtime.unload_all_cmd || "";
+  const flavor = data.runtime.runtime_flavor || "llamacpp";
+  document.getElementById("settings-runtime-flavor").value = flavor;
+  document.getElementById("settings-active-engine-label").textContent = ENGINE_LABELS[flavor] || flavor;
+  state.globalRuntimeFlavor = flavor;
 
   document.getElementById("settings-judge-enabled").checked = !!data.judge.enabled;
   const judgeProvider = data.judge.provider || "anthropic";
@@ -4694,6 +5250,38 @@ function renderKeysList(keys) {
     });
     row.appendChild(toggleBtn);
 
+    // "Set" only means a key exists, not that it works. Testing asks the
+    // provider directly (a free, read-only call) so a revoked or mistyped key
+    // is caught here instead of after a paid run fails on every task.
+    const testBtn = document.createElement("button");
+    testBtn.className = "secondary small";
+    testBtn.textContent = "Test";
+    testBtn.title = "Check this key against the provider (free, no tokens generated)";
+    testBtn.disabled = !isSet;
+    testBtn.addEventListener("click", async () => {
+      testBtn.disabled = true;
+      const prev = statusEl.textContent;
+      statusEl.textContent = "Testing…";
+      try {
+        const res = await api(`/api/settings/keys/${provider}/test`, { method: "POST" });
+        if (res.ok) {
+          statusEl.className = "key-status key-set";
+          statusEl.textContent = "● Valid";
+          showToast(`${label}: ${res.detail}`, "success");
+        } else {
+          statusEl.className = "key-status key-unset";
+          statusEl.textContent = "● Invalid";
+          showToast(`${label}: ${res.detail}`, "error", 7000);
+        }
+      } catch (e) {
+        statusEl.textContent = prev;
+        showToast(`${label}: test failed — ${apiErrorDetail(e)}`, "error");
+      } finally {
+        testBtn.disabled = false;
+      }
+    });
+    row.appendChild(testBtn);
+
     const saveBtn = document.createElement("button");
     saveBtn.className = "secondary small";
     saveBtn.textContent = "Save";
@@ -4738,6 +5326,10 @@ document.querySelectorAll("[data-preset-url]").forEach((btn) => {
     if (btn.dataset.presetUnload !== undefined) {
       document.getElementById("settings-unload-cmd").value = btn.dataset.presetUnload;
     }
+    if (btn.dataset.presetFlavor) {
+      document.getElementById("settings-runtime-flavor").value = btn.dataset.presetFlavor;
+      document.getElementById("settings-active-engine-label").textContent = ENGINE_LABELS[btn.dataset.presetFlavor] || btn.dataset.presetFlavor;
+    }
   });
 });
 
@@ -4772,8 +5364,10 @@ document.getElementById("settings-runtime-save")?.addEventListener("click", asyn
         base_url: document.getElementById("settings-base-url").value,
         request_timeout_seconds: Number(document.getElementById("settings-timeout").value),
         unload_all_cmd: document.getElementById("settings-unload-cmd").value,
+        runtime_flavor: document.getElementById("settings-runtime-flavor").value,
       }),
     });
+    state.globalRuntimeFlavor = document.getElementById("settings-runtime-flavor").value;
     statusEl.innerHTML = '<span class="delta-badge better">✓ Saved</span>';
   } catch (e) {
     statusEl.innerHTML = `<span class="delta-badge worse">Error: ${apiErrorDetail(e)}</span>`;
@@ -4815,3 +5409,16 @@ document.getElementById("settings-judge-save")?.addEventListener("click", async 
 // ---------- init ----------
 loadConfig();
 resumeActiveRunIfAny();
+
+// Deep-link to a tab with ?view=<name> (e.g. /?view=hardware), so a specific
+// view can be bookmarked, shared, or opened directly instead of always
+// landing on the benchmark tab and clicking across.
+(function applyViewFromUrl() {
+  const wanted = new URLSearchParams(window.location.search).get("view");
+  if (!wanted) return;
+  // Only switch to a view that actually exists -- an unknown value should
+  // leave the default tab alone rather than blanking the page.
+  if (document.querySelector(`nav.tabs button[data-view="${wanted}"]`)) {
+    switchView(wanted);
+  }
+})();

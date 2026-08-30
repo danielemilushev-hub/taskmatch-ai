@@ -7,6 +7,7 @@ of GGUF model files on the host machine, and process lifecycle management
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -68,12 +69,20 @@ def find_llama_server_binary(custom_path: str | None = None, backend: str | None
             candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
             return candidates[0][1]
 
-    # 3. Check common Windows installation paths
+    # 3. Check common manual-install locations. Home-relative paths work on
+    # every platform; drive-letter paths are only meaningful on Windows.
     common_paths = [
-        r"C:\llama.cpp\llama-server.exe",
-        r"D:\llama.cpp\llama-server.exe",
-        r"C:\Users\Daniel\.docker\bin\inference\llama-server.exe",
+        os.path.expanduser("~/llama.cpp/llama-server"),
+        os.path.expanduser("~/llama.cpp/build/bin/llama-server"),
+        "/usr/local/bin/llama-server",
+        "/opt/llama.cpp/llama-server",
     ]
+    if os.name == "nt":
+        common_paths = [
+            r"C:\llama.cpp\llama-server.exe",
+            r"D:\llama.cpp\llama-server.exe",
+            os.path.expanduser(r"~\llama.cpp\llama-server.exe"),
+        ]
     for p in common_paths:
         if os.path.isfile(p):
             return p
@@ -160,6 +169,60 @@ def label_for(backend_id: str) -> str:
     return {"vulkan": "Vulkan", "rocm": "ROCm", "cuda": "CUDA", "cpu": "CPU"}.get(backend_id, backend_id)
 
 
+def _resolve_vendor_dirs(backend_dir: str) -> list[str]:
+    """Read the backend's own backend-manifest.json for the vendor runtime
+    package(s) it depends on, and resolve each to a real directory under the
+    shared backends/vendor/ folder (a sibling of every versioned backend
+    folder).
+
+    This exists because LM Studio does NOT ship a ROCm/CUDA build's actual
+    GPU runtime libraries (amdhip64.dll, cudart64_*.dll, etc.) inside the
+    versioned backend folder itself -- those live in a separate shared
+    vendor package and LM Studio's own launcher must put it on PATH before
+    starting llama-server.exe. Without this, invoking the exact same binary
+    directly fails with a missing-DLL error that looks like a generic
+    runtime problem but is actually just this missing PATH entry -- verified
+    live on this machine: the ROCm build failed with
+    "api-ms-win-crt-heap-l1-1-0.dll" missing until the vendor package's `bin`
+    directory (containing amdhip64_7.dll et al.) was added to PATH, at which
+    point --list-devices succeeded and correctly enumerated both GPUs.
+    """
+    manifest_path = os.path.join(backend_dir, "backend-manifest.json")
+    try:
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            manifest = json.load(f)
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return []
+
+    pkg_names = manifest.get("vendor_lib_package_names") or []
+    if not pkg_names:
+        return []
+
+    # backends/vendor/ is a sibling of every llama.cpp-win-x86_64-* folder.
+    vendor_root = os.path.join(os.path.dirname(backend_dir), "vendor")
+    dirs = []
+    for name in pkg_names:
+        pkg_dir = os.path.join(vendor_root, name)
+        if os.path.isdir(pkg_dir):
+            dirs.append(pkg_dir)
+            bin_dir = os.path.join(pkg_dir, "bin")
+            if os.path.isdir(bin_dir):
+                dirs.append(bin_dir)
+    return dirs
+
+
+def _env_with_vendor_dirs(binary_path: str) -> dict:
+    """os.environ plus the binary's vendor runtime directories prepended to
+    PATH -- see _resolve_vendor_dirs. Always returns a full env dict (never
+    just the additions) since it's meant to be passed directly as
+    subprocess's `env=`."""
+    env = os.environ.copy()
+    vendor_dirs = _resolve_vendor_dirs(os.path.dirname(binary_path))
+    if vendor_dirs:
+        env["PATH"] = os.pathsep.join(vendor_dirs) + os.pathsep + env.get("PATH", "")
+    return env
+
+
 def probe_backend_devices(binary_path: str, timeout: float = 15.0) -> dict:
     """Actually attempt to launch `binary_path --list-devices` and parse the
     result -- the only reliable way to know a backend truly works, as
@@ -182,6 +245,7 @@ def probe_backend_devices(binary_path: str, timeout: float = 15.0) -> dict:
             capture_output=True,
             text=True,
             timeout=timeout,
+            env=_env_with_vendor_dirs(binary_path),
         )
     except subprocess.TimeoutExpired:
         return {"available": False, "devices": [], "error": f"timed out after {timeout}s"}
@@ -194,7 +258,12 @@ def probe_backend_devices(binary_path: str, timeout: float = 15.0) -> dict:
         # status -- name it plainly rather than just printing the number.
         detail = proc.stderr.strip() or proc.stdout.strip()
         if proc.returncode == 3221225781 or "0xC0000135" in detail:
-            detail = (detail + " -- ").strip(" -") + "missing a required runtime DLL (commonly fixed by installing the Microsoft Visual C++ Redistributable)"
+            # Already tried adding this backend's known vendor runtime dirs
+            # (see _env_with_vendor_dirs) before this failure happened, so a
+            # missing GPU-vendor driver component (e.g. no NVIDIA driver
+            # installed at all) is the likely remaining cause, not a generic
+            # VC++ redistributable gap.
+            detail = (detail + " -- ").strip(" -") + "missing a required runtime DLL even with known vendor runtime paths added (the GPU driver itself may be missing, or this GPU vendor isn't present on this machine)"
         return {
             "available": False,
             "devices": [],
@@ -221,21 +290,90 @@ def probe_backend_devices(binary_path: str, timeout: float = 15.0) -> dict:
     return {"available": True, "devices": devices, "error": None}
 
 
+# Which GPU vendor each backend targets -- "any" means it isn't
+# vendor-specific (Vulkan runs on any card, CPU needs none at all).
+_BACKEND_VENDOR = {"vulkan": "any", "rocm": "amd", "cuda": "nvidia", "cpu": "any"}
+
+_VENDOR_NAME_HINTS = {
+    "amd": ("amd", "radeon"),
+    "nvidia": ("nvidia", "geforce", "rtx", "gtx", "quadro", "tesla"),
+}
+
+
+def _classify_vendors(device_names: set[str]) -> set[str]:
+    vendors = set()
+    for name in device_names:
+        lower = name.lower()
+        for vendor, hints in _VENDOR_NAME_HINTS.items():
+            if any(h in lower for h in hints):
+                vendors.add(vendor)
+    return vendors
+
+
 def list_llama_backends_with_status() -> list[dict]:
     """discover_llama_backends() + a real launch probe for each -- the
     combined result the dashboard actually shows: which backends exist,
     which of those genuinely work on this machine right now, and their
     real device lists for GPU selection.
+
+    A backend whose target vendor doesn't match ANY GPU actually detected on
+    this machine is dropped from the result entirely (e.g. CUDA on an
+    all-AMD machine) rather than shown as a perpetually-disabled option --
+    that vendor mismatch can never be fixed by anything the user does here,
+    unlike a genuinely missing runtime DLL. This is derived live from
+    whatever device names were actually enumerated (Vulkan reliably reports
+    every GPU regardless of vendor), not hardcoded to one vendor, so the
+    exact same code correctly shows CUDA and hides ROCm on an NVIDIA
+    machine. Backend discovery/probing itself (discover_llama_backends,
+    probe_backend_devices) is untouched -- every installed backend is still
+    found and probed; only the returned list is filtered.
     """
     backends = discover_llama_backends()
     for b in backends:
         status = probe_backend_devices(b["path"])
         b.update(status)
-    return backends
+
+    all_device_names = set()
+    for b in backends:
+        all_device_names.update(d["name"] for d in b.get("devices", []))
+    detected_vendors = _classify_vendors(all_device_names)
+
+    return [
+        b for b in backends
+        if _BACKEND_VENDOR.get(b["id"], "any") == "any" or _BACKEND_VENDOR[b["id"]] in detected_vendors
+    ]
+
+
+def is_auxiliary_gguf(filename: str) -> bool:
+    """True for .gguf files that are companion weights, not standalone models.
+
+    These cannot be loaded as a main model and llama-server refuses them
+    outright -- e.g. loading a projector fails with "CLIP cannot be used as
+    main model, use it with --mmproj instead", which is what a user saw after
+    picking one from the model list.
+
+    Matching is on the whole filename, not just its start: real-world names put
+    the marker at the end (`Qwen3.5-2B.BF16-mmproj.gguf`, `qwen36_mtp.gguf`),
+    so an older `startswith("mmproj")` check let every one of them through.
+    The `mtp`/`draft` markers are matched only as a delimited token so a
+    legitimate model whose name merely contains those letters isn't hidden.
+    """
+    name = filename.lower()
+    if not name.endswith(".gguf"):
+        return False
+    stem = name[: -len(".gguf")]
+    if "mmproj" in stem or "projector" in stem:
+        return True
+    # Multi-token-prediction / speculative-decoding draft weights.
+    for marker in ("mtp", "draft", "eagle"):
+        if stem == marker or stem.endswith(f"-{marker}") or stem.endswith(f"_{marker}") or stem.endswith(f".{marker}"):
+            return True
+    return False
 
 
 def list_local_ggufs(search_dirs: list[str] | None = None) -> list[str]:
-    """Scan local directories for GGUF model files (excluding mmproj projector weights)."""
+    """Scan local directories for GGUF model files (excluding companion
+    weights like mmproj projectors -- see is_auxiliary_gguf)."""
     if search_dirs is None:
         try:
             from . import settings_store
@@ -255,7 +393,7 @@ def list_local_ggufs(search_dirs: list[str] | None = None) -> list[str]:
         try:
             for root, _, files in os.walk(base):
                 for f in files:
-                    if f.lower().endswith(".gguf") and not f.lower().startswith("mmproj"):
+                    if f.lower().endswith(".gguf") and not is_auxiliary_gguf(f):
                         full_p = os.path.abspath(os.path.join(root, f))
                         if full_p.lower() not in seen:
                             seen.add(full_p.lower())
@@ -322,7 +460,13 @@ def scan_all_local_models(search_dirs: list[str] | None = None) -> dict[str, dic
 
 
 def auto_scan_drives() -> list[str]:
-    """Scan all drive letters (C:\\, D:\\, etc.) for directories containing .gguf files."""
+    """Scan likely storage roots for directories that look like model folders.
+
+    On Windows those roots are the drive letters; on Linux/macOS they're the
+    home directory plus the conventional mount points (/mnt, /media, /Volumes),
+    since a POSIX box has no drive letters to walk and would otherwise find
+    nothing at all here.
+    """
     import string
     found_dirs = []
     seen = set()
@@ -333,21 +477,23 @@ def auto_scan_drives() -> list[str]:
         os.path.expanduser("~/.cache/lm-studio/models"),
         os.path.expanduser("~/.cache/huggingface/hub"),
         os.path.expanduser("~/.ollama/models"),
-        r"D:\models",
-        r"C:\models",
-        r"D:\LLM",
-        r"C:\LLM",
-        r"D:\AI",
-        r"C:\AI",
     ]
+    if os.name == "nt":
+        known += [r"D:\models", r"C:\models", r"D:\LLM", r"C:\LLM", r"D:\AI", r"C:\AI"]
+    else:
+        known += ["/usr/share/ollama/.ollama/models", os.path.expanduser("~/models")]
+
     for k in known:
         if os.path.isdir(k) and os.path.normpath(k).lower() not in seen:
             seen.add(os.path.normpath(k).lower())
             found_dirs.append(os.path.normpath(k))
 
-    # Fast shallow scan on all available drive roots
-    drives = [f"{d}:\\" for d in string.ascii_uppercase if os.path.exists(f"{d}:\\")]
-    for d in drives:
+    # Fast shallow scan of each storage root
+    if os.name == "nt":
+        roots = [f"{d}:\\" for d in string.ascii_uppercase if os.path.exists(f"{d}:\\")]
+    else:
+        roots = [p for p in (os.path.expanduser("~"), "/mnt", "/media", "/Volumes", "/opt") if os.path.isdir(p)]
+    for d in roots:
         try:
             with os.scandir(d) as it:
                 for entry in it:
@@ -453,6 +599,40 @@ def build_llama_server_args(model_cfg: dict, gguf_path: str, port: int = 8080) -
     return args
 
 
+def serving_model_path(base_url: str = "http://localhost:8080/v1", timeout: float = 2.0) -> str | None:
+    """Absolute GGUF path llama-server is currently serving, or None.
+
+    llama-server reports the model by its full file path, which is what makes
+    a reliable "is this already the model I want?" check possible.
+    """
+    try:
+        resp = requests.get(base_url.rstrip("/") + "/models", timeout=timeout)
+        if resp.status_code != 200:
+            return None
+        data = resp.json().get("data") or []
+        if not data:
+            return None
+        path = data[0].get("id") or data[0].get("name")
+        return os.path.normpath(os.path.abspath(path)) if path else None
+    except Exception:
+        return None
+
+
+def is_model_already_serving(gguf_path: str, base_url: str = "http://localhost:8080/v1") -> bool:
+    """True when llama-server is already serving exactly this GGUF.
+
+    Lets a benchmark reuse a server the user already started ("Load Model" /
+    "Launch in Terminal") instead of tearing it down and loading the identical
+    weights again -- launch_llama_server() always stops any existing server
+    first, so without this check pressing Load and then Start Benchmark loaded
+    the same multi-GB model twice in a row.
+    """
+    current = serving_model_path(base_url)
+    if not current:
+        return False
+    return current == os.path.normpath(os.path.abspath(gguf_path))
+
+
 def wait_for_server_ready(base_url: str = "http://localhost:8080/v1", timeout_seconds: float = 45.0) -> bool:
     """Poll the /v1/models endpoint until the server reports ready."""
     url = base_url.rstrip("/") + "/models"
@@ -533,20 +713,27 @@ def launch_llama_server(
 
     args = build_llama_server_args(model_cfg, norm_gguf, port=port)
     bin_dir = os.path.dirname(binary)
+    # ROCm/CUDA builds need their real GPU runtime libraries (amdhip64.dll,
+    # cudart64_*.dll, etc.) on PATH -- LM Studio keeps those in a separate
+    # shared vendor package, not inside the versioned backend folder itself
+    # (see _resolve_vendor_dirs). A spawned child process inherits this via
+    # normal Windows process creation, including through `cmd.exe /c start`
+    # in the terminal-launch path below.
+    launch_env = _env_with_vendor_dirs(binary)
 
     if in_terminal and os.name == "nt":
         # Launch visible interactive Windows Command Prompt window with /k so it stays open
         title = f"llama.cpp Server [{os.path.basename(norm_gguf)}] on :{port}"
         launch_cmd = ["cmd.exe", "/c", "start", title, "/D", bin_dir, "cmd.exe", "/k", binary] + args
         try:
-            _MANAGED_PROCESS = subprocess.Popen(launch_cmd, cwd=bin_dir)
+            _MANAGED_PROCESS = subprocess.Popen(launch_cmd, cwd=bin_dir, env=launch_env)
             return True, f"Launched llama-server in terminal for '{os.path.basename(norm_gguf)}' on port {port}"
         except Exception as e:
             return False, f"Failed to open terminal for llama-server: {e}"
     else:
         try:
             full_cmd = [binary] + args
-            _MANAGED_PROCESS = subprocess.Popen(full_cmd, cwd=bin_dir)
+            _MANAGED_PROCESS = subprocess.Popen(full_cmd, cwd=bin_dir, env=launch_env)
             return True, f"Started llama-server background process for '{os.path.basename(norm_gguf)}' on port {port}"
         except Exception as e:
             return False, f"Failed to start llama-server process: {e}"

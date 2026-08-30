@@ -67,7 +67,18 @@ def _make_progress_logger(log, model_name: str, suite_name: str, should_cancel=N
         # written by log()'s own _persist() call already reflects them --
         # keeps the live HUD current within one problem, not one behind.
         if result is not None and on_stats is not None:
-            on_stats(result.tokens_per_sec, result.ttft_seconds)
+            # Also pass prefill throughput and the problem id: for a prefill
+            # probe (huge prompt, tiny max_tokens) decode tok/s is a
+            # structurally tiny number -- 8 tokens over a latency dominated by
+            # processing thousands of prompt tokens -- and shown unlabelled as
+            # "Generation Speed" it badly understates the model. The UI needs
+            # to know which metric is the meaningful one for this task.
+            on_stats(
+                result.tokens_per_sec,
+                result.ttft_seconds,
+                result.prefill_tokens_per_sec,
+                problem_id,
+            )
         status = "PASS" if passed else "FAIL"
         log(f"    [{model_name}] {suite_name} [{idx}/{total}] {problem_id}: {status}")
         if should_cancel is not None and should_cancel():
@@ -170,8 +181,29 @@ def _switch_to_model(model_cfg: dict, base_url: str, unload_all_cmd: str | None,
     if flavor == "llamacpp":
         from . import llamacpp_mgr
         target_url = "http://localhost:8080/v1"
+
+        # Reuse a server that is already serving exactly this model. The user
+        # can start one themselves from the config modal ("Load Model" /
+        # "Launch in Terminal"), and launch_llama_server() unconditionally
+        # stops any running server before starting a new one -- so without
+        # this check, doing that and then pressing Start Benchmark unloaded
+        # and reloaded the identical multi-GB weights, doubling the wait for
+        # no benefit.
+        existing_gguf = llamacpp_mgr.find_model_gguf(name)
+        if existing_gguf and llamacpp_mgr.is_model_already_serving(existing_gguf, target_url):
+            log(f"'{name}' is already loaded and serving on {target_url} -- reusing it (no reload)")
+            return
+
         log(f"launching llama-server terminal for '{name}'...")
-        ok, msg = llamacpp_mgr.launch_llama_server(model_cfg, in_terminal=True, port=8080)
+        # Without this, launch_llama_server() falls back to its legacy
+        # auto-pick (Vulkan > ROCm > CUDA > AVX2 by substring score), which
+        # ignores whatever compute backend was actually selected in the
+        # dashboard -- and since -dev device ids are backend-specific (e.g.
+        # "ROCm0" only means something to the ROCm binary), passing a ROCm
+        # device id to an auto-picked Vulkan binary doesn't restrict
+        # anything: llama.cpp silently falls back to using every GPU.
+        backend = model_cfg.get("backend") or (model_cfg.get("settings") or {}).get("backend")
+        ok, msg = llamacpp_mgr.launch_llama_server(model_cfg, in_terminal=True, port=8080, backend=backend)
         if not ok:
             raise ModelSwitchError(msg)
         log(f"{msg} -- waiting for readiness on {target_url}...")
@@ -390,6 +422,8 @@ def run_benchmark(
             "runtime_flavor",
             "gpu_offload",
             "backend",
+            "devices",
+            "gpuSelection",
         ]:
             if model_cfg.get(k) is not None:
                 runtime_info[k] = model_cfg[k]
@@ -405,11 +439,16 @@ def run_benchmark(
         if hardware_perf_cfg.get("enabled", True):
             log(f"  [{model_name}] running hardware_perf suite...")
             with ResourceMonitor() as mon:
+                # The largest prefill tiers only run if they fit this model's
+                # configured context window -- otherwise they'd overflow it
+                # and produce a failed call rather than a slow measurement.
+                model_ctx = model_cfg.get("context_length") or (model_cfg.get("settings") or {}).get("context_length")
                 problems = hardware_perf_suite.run(
                     ctx,
                     seed=hardware_perf_cfg.get("seed", 42),
                     call_timeout_seconds=hardware_perf_cfg.get("call_timeout_seconds", 300),
                     on_progress=_make_progress_logger(log, model_name, should_cancel=should_cancel, on_stats=on_stats, suite_name="hardware_perf"),
+                    max_context_tokens=model_ctx,
                 )
             model_result.suites["hardware_perf"] = SuiteRunResult(
                 suite="hardware_perf", problems=problems, resource_usage=mon.summary()

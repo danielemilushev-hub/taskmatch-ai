@@ -700,6 +700,76 @@ pre.output {
   border-color: #3b82f6;
   color: #93c5fd;
 }
+/* ---- GPU Device Cards (Model Config Modal) ---- */
+.gpu-device-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  transition: border-color .12s ease, background .12s ease;
+}
+.gpu-device-card.disabled {
+  opacity: 0.5;
+}
+.gpu-device-card-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.gpu-device-card-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+.gpu-toggle-switch {
+  position: relative;
+  display: inline-block;
+  width: 38px;
+  height: 20px;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+.gpu-toggle-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.gpu-toggle-slider {
+  position: absolute;
+  inset: 0;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 20px;
+  transition: background .15s ease, border-color .15s ease;
+}
+.gpu-toggle-slider::before {
+  content: "";
+  position: absolute;
+  height: 14px;
+  width: 14px;
+  left: 2px;
+  top: 2px;
+  background: var(--text-muted);
+  border-radius: 50%;
+  transition: transform .15s ease, background .15s ease;
+}
+.gpu-toggle-switch input:checked + .gpu-toggle-slider {
+  background: #3b82f6;
+  border-color: #3b82f6;
+}
+.gpu-toggle-switch input:checked + .gpu-toggle-slider::before {
+  transform: translateX(18px);
+  background: #fff;
+}
+.gpu-toggle-switch input:disabled + .gpu-toggle-slider {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
 .model-cmd-preview {
   background: rgba(0, 0, 0, 0.35);
   border: 1px solid var(--border);

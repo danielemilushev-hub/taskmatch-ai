@@ -68,11 +68,15 @@ def run(
     call_timeout_seconds: float = 300,
     problems: list[dict] | None = None,
     on_progress: Callable[[int, int, str, bool], None] | None = None,
+    max_context_tokens: int | None = None,
 ) -> list[ProblemResult]:
     # Fixed set regardless of Quick/Full profile -- see the module docstring
     # in data/hardware_perf_problems.py for why: this characterizes
     # hardware, it isn't a statistically-sampled accuracy measurement.
-    problems = problems if problems is not None else generate_problems(seed)
+    # max_context_tokens only drops prefill tiers that cannot fit the model's
+    # context window, so a small-context model runs fewer probes rather than
+    # failing the largest ones.
+    problems = problems if problems is not None else generate_problems(seed, max_context_tokens)
     results: list[ProblemResult] = []
 
     for idx, problem in enumerate(problems):
