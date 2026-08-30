@@ -5,7 +5,7 @@ All notable changes to TaskMatch AI are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project uses [semantic versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.2.2] — 2026-08-30
 
 ### Added
 

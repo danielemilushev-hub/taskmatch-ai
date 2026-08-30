@@ -7,4 +7,4 @@ running?" always has one answer you can read off the screen. A test asserts
 it matches pyproject.toml so the two cannot drift apart.
 """
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
