@@ -858,7 +858,12 @@ def load_model_endpoint(payload: dict) -> dict:
     """Load a model into the specified runtime engine."""
     from localbench import llamacpp_mgr
     flavor = payload.get("runtime_flavor") or "llamacpp"
-    name = payload.get("name") or "model"
+    # Required, never defaulted: a placeholder like "model" fuzzy-matches a
+    # real model.gguf on disk, so a request that forgot the name silently
+    # loaded an arbitrary multi-GB model and reported success.
+    name = (payload.get("name") or "").strip()
+    if not name:
+        raise HTTPException(400, "a model 'name' is required")
     in_terminal = bool(payload.get("in_terminal", False))
 
     if flavor == "llamacpp":
@@ -919,6 +924,8 @@ def unload_all_endpoint() -> dict:
 def launch_llamacpp(payload: dict) -> dict:
     """Launch llama-server.exe in a dedicated terminal window with the specified model and flags."""
     from localbench import llamacpp_mgr
+    if not (payload.get("name") or "").strip():
+        raise HTTPException(400, "a model 'name' is required")
     port = payload.get("port", 8080)
     in_terminal = payload.get("in_terminal", True)
     ok, msg = llamacpp_mgr.launch_llama_server(

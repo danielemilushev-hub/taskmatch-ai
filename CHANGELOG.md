@@ -49,6 +49,18 @@ Fixes two problems reported from a fresh install on a second machine.
   highlighted, implying a multi-select that no longer exists — a run targets
   one model, chosen via Configure & Run.
 
+- **A failed model load reported success.** "Load Now" started llama-server
+  and immediately returned "started" — but a GGUF the selected backend cannot
+  read (e.g. an unsupported architecture) makes llama-server exit within a
+  second. The launch is now watched briefly and reports the real outcome with
+  an actionable message, instead of showing a success toast for a load that
+  had already failed.
+- **A request with no model name loaded an arbitrary model.** `name` defaulted
+  to the placeholder `"model"`, which fuzzy-matches a real `model.gguf` on
+  disk, so a malformed request silently began loading a multi-GB model and
+  returned HTTP 200. `/api/models/load` and `/api/llamacpp/launch` now
+  require a name, and the launcher refuses an empty one.
+
 ### Changed
 
 - `logic_math` now runs with loop detection enabled, and the runner actually

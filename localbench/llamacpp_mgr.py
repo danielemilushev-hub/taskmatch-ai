@@ -238,6 +238,12 @@ _LAST_GOOD_PROBE: dict[str, dict] = {}
 # 15s was tight enough to time out in exactly those cases.
 _PROBE_TIMEOUT_SECONDS = 40.0
 
+# How long to watch a freshly-started llama-server before calling the launch a
+# success. Long enough to catch a model that fails to load (those die well
+# under a second), short enough not to stall on a real load, which takes far
+# longer and completes in the background.
+_EARLY_EXIT_GRACE_SECONDS = 2.5
+
 
 def _probe_failure(binary_path: str, error: str) -> dict:
     """Result for a failed probe, reusing this binary's last successful device
@@ -746,7 +752,11 @@ def launch_llama_server(
     global _MANAGED_PROCESS, _MANAGED_PORT
     _MANAGED_PORT = port
 
-    model_name = model_cfg.get("name") or "model"
+    # No placeholder default: "model" fuzzy-matches a real model.gguf, which
+    # turned a nameless request into loading an arbitrary model.
+    model_name = (model_cfg.get("name") or "").strip()
+    if not model_name:
+        return False, "no model name was given, so there is nothing to load."
     raw_binary = find_llama_server_binary(custom_binary, backend=backend)
     if not raw_binary:
         reason = f" for backend '{backend}'" if backend else ""
@@ -784,6 +794,25 @@ def launch_llama_server(
         try:
             full_cmd = [binary] + args
             _MANAGED_PROCESS = subprocess.Popen(full_cmd, cwd=bin_dir, env=launch_env)
+
+            # Starting the process is not the same as loading the model. A
+            # model llama.cpp cannot read (unsupported architecture, wrong
+            # backend for the file, corrupt GGUF) makes llama-server exit
+            # within a second -- but reporting only "process started" showed
+            # the user a success message for a load that had already failed.
+            # A short grace period catches that class of failure without
+            # waiting out a genuine multi-GB load, which continues in the
+            # background and is confirmed separately by wait_for_server_ready.
+            time.sleep(_EARLY_EXIT_GRACE_SECONDS)
+            exit_code = _MANAGED_PROCESS.poll()
+            if exit_code is not None:
+                _MANAGED_PROCESS = None
+                return False, (
+                    f"llama-server exited immediately (code {exit_code}) while loading "
+                    f"'{os.path.basename(norm_gguf)}'. Use 'Load in Terminal' to see the "
+                    f"reason -- a common cause is a model architecture this compute "
+                    f"backend cannot read."
+                )
             return True, f"Started llama-server background process for '{os.path.basename(norm_gguf)}' on port {port}"
         except Exception as e:
             return False, f"Failed to start llama-server process: {e}"

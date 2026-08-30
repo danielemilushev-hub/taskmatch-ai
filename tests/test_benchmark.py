@@ -659,6 +659,56 @@ class TestLocalbenchCore(unittest.TestCase):
         self.assertIn("__APP_VERSION__", index_html)
         self.assertNotIn("PRO v2.5", index_html)
 
+    def test_launch_requires_a_model_name(self):
+        from unittest.mock import patch
+        from localbench import llamacpp_mgr
+
+        # A request without a model name used to default to "model", which
+        # fuzzy-matches a real model.gguf on disk -- so a malformed request
+        # silently started loading an arbitrary multi-GB model and reported
+        # success. It must refuse instead, and must not reach the launcher.
+        with patch.object(llamacpp_mgr, "find_model_gguf") as mock_find:
+            for cfg in ({}, {"name": ""}, {"name": "   "}):
+                ok, msg = llamacpp_mgr.launch_llama_server(cfg, in_terminal=False)
+                self.assertFalse(ok, cfg)
+                self.assertIn("no model name", msg.lower())
+            mock_find.assert_not_called()
+
+    def test_background_launch_reports_immediate_model_load_failure(self):
+        from unittest.mock import patch, MagicMock
+        from localbench import llamacpp_mgr
+
+        # Starting the process is not the same as loading the model: a GGUF
+        # the backend cannot read makes llama-server exit within a second.
+        # Reporting "started successfully" for that showed a success message
+        # for a load that had already failed.
+        dead = MagicMock()
+        dead.poll.return_value = 1  # already exited
+
+        with patch.object(llamacpp_mgr, "find_llama_server_binary", return_value=r"C:\b\llama-server.exe"), \
+             patch.object(llamacpp_mgr, "find_model_gguf", return_value=r"C:\models\bad.gguf"), \
+             patch.object(llamacpp_mgr, "stop_llama_server", return_value=True), \
+             patch.object(llamacpp_mgr, "_env_with_vendor_dirs", return_value={}), \
+             patch.object(llamacpp_mgr.subprocess, "Popen", return_value=dead), \
+             patch.object(llamacpp_mgr.time, "sleep", return_value=None):
+            ok, msg = llamacpp_mgr.launch_llama_server({"name": "bad"}, in_terminal=False)
+
+        self.assertFalse(ok)
+        self.assertIn("exited immediately", msg)
+
+        # A process still running after the grace period is a real success.
+        alive = MagicMock()
+        alive.poll.return_value = None
+        with patch.object(llamacpp_mgr, "find_llama_server_binary", return_value=r"C:\b\llama-server.exe"), \
+             patch.object(llamacpp_mgr, "find_model_gguf", return_value=r"C:\models\good.gguf"), \
+             patch.object(llamacpp_mgr, "stop_llama_server", return_value=True), \
+             patch.object(llamacpp_mgr, "_env_with_vendor_dirs", return_value={}), \
+             patch.object(llamacpp_mgr.subprocess, "Popen", return_value=alive), \
+             patch.object(llamacpp_mgr.time, "sleep", return_value=None):
+            ok, msg = llamacpp_mgr.launch_llama_server({"name": "good"}, in_terminal=False)
+
+        self.assertTrue(ok)
+
     def test_probe_falls_back_to_last_good_devices_on_transient_failure(self):
         import subprocess as sp
         from unittest.mock import patch
