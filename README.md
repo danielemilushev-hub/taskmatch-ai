@@ -1,10 +1,18 @@
 # TaskMatch AI
 
+[![Latest release](https://img.shields.io/github/v/tag/danielemilushev-hub/taskmatch-ai?label=latest%20release&color=00d2ff&sort=semver)](https://github.com/danielemilushev-hub/taskmatch-ai/tags)
 [![CI](https://github.com/danielemilushev-hub/taskmatch-ai/actions/workflows/ci.yml/badge.svg)](https://github.com/danielemilushev-hub/taskmatch-ai/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-green)](LICENSE)
 
 **Task-driven evaluation for local LLMs.**
+
+> **Always clone `main`** — it is the latest release. The badge above tracks
+> the newest tag, and the version you are actually running is shown in the
+> dashboard header and by `python cli.py --version`, so the two can always be
+> checked against each other. See [CHANGELOG.md](CHANGELOG.md) for what
+> changed, and [Updating an existing install](#updating-an-existing-install)
+> if you cloned this before.
 
 A benchmarking tool for locally-running LLMs (LM Studio, Ollama, llama.cpp,
 or anything else exposing an OpenAI-compatible `/v1/chat/completions`
@@ -231,44 +239,58 @@ Each run writes:
 python cli.py serve   # http://localhost:8000 by default; --port to change
 ```
 
-FastAPI backend + a plain HTML/CSS/JS frontend, no build step. Five tabs:
+FastAPI backend + a plain HTML/CSS/JS frontend, no build step. Six tabs
+(any of them can be linked directly, e.g. `/?view=hardware`):
 
-- **New Run** — pick models (including live-detected ones straight from the
-  runtime, complete with real size/quantization/context-length/vision/
-  tool-use badges pulled from LM Studio's own catalog when available) and
-  suites, start a run, and watch:
-  - a live-scrolling log with per-problem `[i/N] problem_id: PASS/FAIL`
-    lines as each one finishes, not just a static "running suite..." line
-  - a **live hardware monitor** — CPU%, RAM (used/total), GPU utilization
-    %, GPU memory, and disk read/write throughput, sampled roughly every
-    second for the duration of the run (see Known Limitations for exactly
-    how GPU data is obtained and its refresh cadence)
-  - the manual-switch confirm banner, if a model has no `load_cmd`
-  - an optional **Frontier Judge** panel (see below) with a live
-    provider/model picker, task/call-count breakdown, and a duration/cost
-    estimate drawn from your own prior runs with that judge
-- **History** — every saved run, filterable by suite/model, with delete,
-  and one-click Markdown/PDF/raw-JSON downloads. Suite pass-rate pills show
-  a truncation-count badge when some failures hit the token budget rather
-  than answering incorrectly.
-- **Compare** — pick any combination of past runs/models and get: a
-  Pareto-frontier scatter (accuracy vs. speed), a per-suite radar chart, bar
-  charts (pass rate, tokens/sec, TTFT), a full sortable/filterable table
-  with a click-through problem inspector (prompt/response/reasoning/error,
-  and judge score+rationale for the frontier suite), and Markdown/CSV
-  export. A separate **Frontier Judge** section appears when any compared
-  run used it, kept apart from the deterministic charts above.
-- **Playground** — run an arbitrary one-off prompt (optionally with a JSON
-  schema to validate against) against any detected model, outside of any
-  saved benchmark run.
-- **Settings** — runtime base URL (with LM Studio/Ollama/llama.cpp presets
-  and a live connection test), frontier judge provider/model/task-count/
-  pass-threshold, and a per-provider API key manager (stored in a local,
-  gitignored `.env`; keys are never echoed back once saved).
+- **Benchmark Suite** — the model library. Every GGUF found on disk is shown
+  with real size/quantization/context-length badges and a VRAM-fit bar sized
+  against *your* GPUs. Companion files that cannot be loaded as a model
+  (`mmproj` projectors, draft weights) are filtered out. Clicking a model
+  opens **Configure & Run**:
+  - **GPU(s) to use** — every detected GPU with its capacity, backend and
+    device id, each with an on/off switch, plus a multi-GPU strategy picker.
+  - **Compute backend** — Vulkan / ROCm / CUDA / CPU, each verified by
+    actually launching it; the list reacts to your GPU selection (ROCm is
+    offered for one GPU only, as it cannot combine mixed generations).
+  - Context window, KV-cache quantization, batch size, concurrency slots,
+    flash attention / mmap / mlock, and quick workstation presets.
+  - **Which suites to run** for this run, with All/None shortcuts.
+  - A live command preview of the exact `llama-server` invocation.
+  - Optional pre-load buttons ("Load Now", "Load in Terminal") — the
+    benchmark reuses an already-loaded model rather than reloading it.
+
+  During a run you get a live log with per-problem `[i/N] problem_id:
+  PASS/FAIL` lines, prefill **and** generation speed side by side, TTFT, and
+  a **live hardware monitor** (CPU, RAM, per-GPU utilization and memory,
+  disk throughput) sampled about once a second. When it finishes you get
+  "Back to Model Library" and "View Results".
+- **History & Analytics** — every saved run, filterable, with delete and
+  one-click Markdown / PDF / raw-JSON export, and a problem inspector
+  showing prompt, response, reasoning, and failure reason.
+- **Model Arena** — head-to-head accuracy comparison: a verdict banner that
+  refuses to name a winner when confidence intervals overlap, a Pareto
+  scatter (accuracy vs. speed), a per-suite radar chart, bar charts, and a
+  sortable table. Comparisons only average suites both runs actually have.
+- **Hardware Bench** — raw speed across every run: prefill throughput per
+  context tier, decode speed, TTFT, plus a bar chart that can rank models by
+  any of those. Every run is kept, so the same model on different backends
+  or GPU counts sits side by side.
+- **Playground & Lab** — run a one-off prompt (optionally validated against
+  a JSON schema) against any detected model, outside any saved run.
+- **Settings & Engine** — the runtime engine (llama.cpp / LM Studio / Ollama
+  / vLLM) as a single global choice with presets and a connection test;
+  model-folder management with drive auto-scan; frontier judge
+  provider/model/tasks/threshold; and an API key vault stored in a local,
+  gitignored `.env`. Each key has a **Test** button that checks it against
+  the provider for real (a free, read-only call) — a revoked key is caught
+  here instead of by a paid run failing on every task.
+
+There is also a theme toggle (dark/light) and an "Unload All" button that
+frees GPU VRAM across runtimes.
 
 ## Run profiles
 
-Two sizes, chosen on the New Run tab:
+Two sizes, chosen in a model's **Configure & Run** panel:
 
 | | Problems | A 90% score gives a 95% CI of |
 |---|---|---|
@@ -305,11 +327,11 @@ interface:
    many paid API calls it will make and requires a `y` confirmation before
    spending anything.
 
-**Dashboard:** enable the judge and add a key in Settings, then check
-"Include frontier-graded suite" on the New Run tab — a provider/model
-picker (with live model lists fetched from each provider's own API, or
-OpenRouter's public catalog) and an explicit paid-cost confirmation dialog
-appear before it runs. Duration and cost estimates are shown when available
+**Dashboard:** enable the judge, pick a provider/model and add a key in
+**Settings & Engine** (the model picker fetches live model lists from each
+provider's own API, or OpenRouter's public catalog, and the **Test** button
+confirms the key actually works). Every run then includes the judge, and an
+explicit paid-cost confirmation dialog appears before it starts. Duration and cost estimates are shown when available
 from a previous run with that exact judge:
 - **Duration** is estimated from real wall-clock time observed last time
   (local call + both paid judge calls), for any provider.
