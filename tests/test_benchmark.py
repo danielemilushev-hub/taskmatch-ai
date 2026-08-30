@@ -293,9 +293,15 @@ class TestLocalbenchCore(unittest.TestCase):
             "mmap": True,
             "batch_size": 2048,
         }
-        args = build_llama_server_args(cfg, "C:/models/test.gguf", port=8080)
+        # build_llama_server_args normalizes the model path to an absolute
+        # one. "C:/models/test.gguf" is absolute on Windows but *relative* on
+        # POSIX, where abspath() prefixes the cwd -- so a hardcoded Windows
+        # path made this assertion fail on Linux while passing on Windows.
+        # Use a path that is genuinely absolute on whichever platform runs it.
+        model_path = os.path.abspath(os.path.join(os.sep, "models", "test.gguf"))
+        args = build_llama_server_args(cfg, model_path, port=8080)
         self.assertIn("-m", args)
-        self.assertEqual(os.path.normpath(args[1]), os.path.normpath("C:/models/test.gguf"))
+        self.assertEqual(os.path.normpath(args[1]), os.path.normpath(model_path))
         self.assertIn("-c", args)
         self.assertEqual(args[args.index("-c") + 1], "8192")
         self.assertIn("-ctk", args)
@@ -317,7 +323,12 @@ class TestLocalbenchCore(unittest.TestCase):
 
     def test_parse_gguf_metadata(self):
         from localbench.llamacpp_mgr import parse_gguf_metadata
-        fake_path = r"D:\models\Devstral-Small-2-24B-Instruct-2512-Q4_K_M.gguf"
+        # Build the path with os.path.join rather than hardcoding a Windows
+        # one: parse_gguf_metadata uses os.path.basename, which does not treat
+        # "\" as a separator on POSIX, so a literal r"D:\models\...gguf" made
+        # display_name come back as the entire path and failed this test on
+        # Linux while passing on Windows.
+        fake_path = os.path.join("models", "Devstral-Small-2-24B-Instruct-2512-Q4_K_M.gguf")
         meta = parse_gguf_metadata(fake_path)
         self.assertEqual(meta["params"], "24B")
         self.assertEqual(meta["quantization"], "Q4_K_M")
