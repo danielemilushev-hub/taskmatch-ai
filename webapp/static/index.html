@@ -205,7 +205,11 @@
               <div class="model-toggle-chip active" id="modal-chip-fa" title="Uses Flash Attention on Vulkan tensor cores">⚡ Flash Attention</div>
               <div class="model-toggle-chip active" id="modal-chip-mmap" title="Memory map weights into page cache">📁 mmap (Fast load)</div>
               <div class="model-toggle-chip" id="modal-chip-mlock" title="Lock model in physical RAM to prevent paging">🔒 mlock (Lock RAM)</div>
+              <div class="model-toggle-chip" id="modal-chip-mtp" title="Multi-Token Prediction: uses the MTP head built into models that ship one (e.g. Qwen3.8-27B) for speculative decoding — no separate draft model needed. Models without an MTP head simply ignore it. Benchmark it on and off to see the real effect on your hardware.">🔮 MTP (speculative decode)</div>
             </div>
+            <em id="modal-mtp-note" style="display:none; font-size:10.5px; color:var(--text-muted); margin-top:6px;">
+              MTP only speeds things up on models that actually ship an MTP head — run Hardware Bench with it on and off to measure whether it helps yours.
+            </em>
           </div>
 
           <!-- Suite Selection -->

@@ -371,6 +371,7 @@ function getModelSettings(modelName) {
       batch_size: 2048,
       split_mode: "layer",
       backend: null,
+      speculative_mtp: false,
       devices: [],
       gpuSelection: [],
       suites: [],
@@ -409,6 +410,7 @@ function generatePreviewCmd(modelName, s) {
     if (s.batch_size) cmd += ` -b ${s.batch_size}`;
     if (s.split_mode && s.split_mode !== "none") cmd += ` -sm ${s.split_mode}`;
     if (s.devices && s.devices.length) cmd += ` -dev ${s.devices.join(",")}`;
+    if (s.speculative_mtp) cmd += ` --spec-type draft-mtp`;
     return cmd;
   } else if (flavor === "vllm") {
     let cmd = `vllm serve "${modelName}" --gpu-memory-utilization 0.95`;
@@ -645,6 +647,8 @@ function openModelConfigModal(modelName) {
   const faChip = document.getElementById("modal-chip-fa");
   const mmapChip = document.getElementById("modal-chip-mmap");
   const mlockChip = document.getElementById("modal-chip-mlock");
+  const mtpChip = document.getElementById("modal-chip-mtp");
+  const mtpNote = document.getElementById("modal-mtp-note");
   const cmdBox = document.getElementById("modal-cmd-preview");
   const statusEl = document.getElementById("modal-action-status");
 
@@ -677,6 +681,8 @@ function openModelConfigModal(modelName) {
   faChip.classList.toggle("active", settings.flash_attention !== false);
   mmapChip.classList.toggle("active", settings.mmap !== false);
   mlockChip.classList.toggle("active", !!settings.mlock);
+  if (mtpChip) mtpChip.classList.toggle("active", !!settings.speculative_mtp);
+  if (mtpNote) mtpNote.style.display = settings.speculative_mtp ? "block" : "none";
   statusEl.innerHTML = '<span style="color:var(--text-muted); font-size:11.5px;">Checking server status on :8080...</span>';
 
   // Check live runtime status
@@ -988,6 +994,7 @@ function openModelConfigModal(modelName) {
     settings.flash_attention = faChip.classList.contains("active");
     settings.mmap = mmapChip.classList.contains("active");
     settings.mlock = mlockChip.classList.contains("active");
+    settings.speculative_mtp = !!(mtpChip && mtpChip.classList.contains("active"));
     cmdBox.textContent = generatePreviewCmd(modelName, settings);
   }
 
@@ -1029,6 +1036,11 @@ function openModelConfigModal(modelName) {
   faChip.onclick = () => { faChip.classList.toggle("active"); syncAndPreview(); };
   mmapChip.onclick = () => { mmapChip.classList.toggle("active"); syncAndPreview(); };
   mlockChip.onclick = () => { mlockChip.classList.toggle("active"); syncAndPreview(); };
+  if (mtpChip) mtpChip.onclick = () => {
+    mtpChip.classList.toggle("active");
+    if (mtpNote) mtpNote.style.display = mtpChip.classList.contains("active") ? "block" : "none";
+    syncAndPreview();
+  };
 
   syncAndPreview();
 
@@ -3234,7 +3246,10 @@ async function loadHardwareCompare() {
       const rli = e.runtime_load_info || {};
       const { text: gpuNote, title: gpuTitle } = describeRunGpus(rli, e.hardware);
       const BACKEND_LABELS = { vulkan: "Vulkan", rocm: "ROCm", cuda: "CUDA", cpu: "CPU" };
-      const engineNote = (rli.backend && (BACKEND_LABELS[rli.backend] || rli.backend)) || rli.engine || rli.runtime;
+      let engineNote = (rli.backend && (BACKEND_LABELS[rli.backend] || rli.backend)) || rli.engine || rli.runtime;
+      // Surfaced because it materially changes decode speed, so an
+      // MTP-on row must be distinguishable from an MTP-off one.
+      if (rli.speculative_mtp) engineNote = (engineNote ? engineNote + " + MTP" : "MTP");
       return `
         <tr style="border-bottom:1px solid var(--border);">
           <td style="padding:8px;">

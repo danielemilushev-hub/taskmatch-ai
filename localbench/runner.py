@@ -135,8 +135,14 @@ def _build_runtime_load_cmd(model_cfg: dict) -> str | None:
             cmd += f" -c {ctx_len}"
         if parallel:
             cmd += f" --parallel {parallel}"
-        if model_cfg.get("speculative_draft_mtp"):
+        # Accepts either key: speculative_mtp is what the dashboard sets
+        # (shared with the llama.cpp path), speculative_draft_mtp is the
+        # older config-file name kept working for existing configs.
+        if model_cfg.get("speculative_mtp") or model_cfg.get("speculative_draft_mtp"):
             cmd += " --speculative-draft-mtp"
+            n_max = model_cfg.get("speculative_n_max")
+            if n_max:
+                cmd += f" --speculative-draft-max-tokens {n_max}"
         return cmd
 
     if flavor == "llamacpp":
@@ -424,6 +430,8 @@ def run_benchmark(
             "backend",
             "devices",
             "gpuSelection",
+            "speculative_mtp",
+            "speculative_n_max",
         ]:
             if model_cfg.get(k) is not None:
                 runtime_info[k] = model_cfg[k]

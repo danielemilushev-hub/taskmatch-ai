@@ -5,6 +5,21 @@ All notable changes to TaskMatch AI are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project uses [semantic versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **MTP (Multi-Token Prediction) speculative decoding**, as a per-run toggle in
+  the model config panel. Some models ship an MTP head in the weights
+  themselves (e.g. Qwen3.8-27B), so speculative decoding needs no separate
+  draft model — the runtime just has to be told to use it, and llama.cpp's
+  `--spec-type` defaults to `none`, so it never was. Sets
+  `--spec-type draft-mtp` for llama.cpp and `--speculative-draft-mtp` for LM
+  Studio. Off by default; a model without an MTP head ignores it rather than
+  failing. Whether MTP was on is recorded per run and shown in Hardware Bench
+  and reports, so an MTP-on run can be compared against an MTP-off one rather
+  than the two being indistinguishable.
+
 ## [0.2.1] — 2026-08-30
 
 Fixes two problems reported from a fresh install on a second machine.

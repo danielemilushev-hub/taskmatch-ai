@@ -252,6 +252,10 @@ FastAPI backend + a plain HTML/CSS/JS frontend, no build step. Six tabs
     offered for one GPU only, as it cannot combine mixed generations).
   - Context window, KV-cache quantization, batch size, concurrency slots,
     flash attention / mmap / mlock, and quick workstation presets.
+  - **MTP** — turns on speculative decoding for models that ship a
+    Multi-Token Prediction head (e.g. Qwen3.8-27B). No separate draft
+    model is needed; models without one ignore it. Off by default, and
+    recorded per run so Hardware Bench can show MTP-on against MTP-off.
   - **Which suites to run** for this run, with All/None shortcuts.
   - A live command preview of the exact `llama-server` invocation.
   - Optional pre-load buttons ("Load Now", "Load in Terminal") — the

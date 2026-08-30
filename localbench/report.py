@@ -214,6 +214,8 @@ def _engine_summary(model_result: dict, hardware: dict | None = None) -> str:
         bits.append(str(flavor))
     if backend:
         bits.append(str(backend))
+    if info.get("speculative_mtp"):
+        bits.append("MTP")
     if hardware is not None:
         bits.append(_run_gpu_description(model_result, hardware))
     else:

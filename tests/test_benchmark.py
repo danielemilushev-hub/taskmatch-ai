@@ -659,6 +659,34 @@ class TestLocalbenchCore(unittest.TestCase):
         self.assertIn("__APP_VERSION__", index_html)
         self.assertNotIn("PRO v2.5", index_html)
 
+    def test_mtp_speculative_decoding_flags(self):
+        from localbench.llamacpp_mgr import build_llama_server_args
+        from localbench.runner import _build_runtime_load_cmd
+
+        # llama.cpp: MTP is enabled with --spec-type draft-mtp, which defaults
+        # to "none" -- without it a model that ships an MTP head never uses it.
+        args = build_llama_server_args({"settings": {"speculative_mtp": True}}, r"C:\m\x.gguf")
+        self.assertIn("--spec-type", args)
+        self.assertEqual(args[args.index("--spec-type") + 1], "draft-mtp")
+
+        # Draft length is optional and only emitted when set.
+        self.assertNotIn("--spec-draft-n-max", args)
+        tuned = build_llama_server_args(
+            {"settings": {"speculative_mtp": True, "speculative_n_max": 5}}, r"C:\m\x.gguf"
+        )
+        self.assertEqual(tuned[tuned.index("--spec-draft-n-max") + 1], "5")
+
+        # Off by default: no speculative flags at all.
+        plain = build_llama_server_args({"settings": {}}, r"C:\m\x.gguf")
+        self.assertNotIn("--spec-type", plain)
+
+        # LM Studio uses its own flag name for the same feature.
+        cmd = _build_runtime_load_cmd({"name": "m", "runtime_flavor": "lmstudio", "speculative_mtp": True})
+        self.assertIn("--speculative-draft-mtp", cmd)
+        # The older config key must keep working for existing config files.
+        legacy = _build_runtime_load_cmd({"name": "m", "runtime_flavor": "lmstudio", "speculative_draft_mtp": True})
+        self.assertIn("--speculative-draft-mtp", legacy)
+
     def test_launch_requires_a_model_name(self):
         from unittest.mock import patch
         from localbench import llamacpp_mgr

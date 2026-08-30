@@ -615,8 +615,24 @@ def build_llama_server_args(model_cfg: dict, gguf_path: str, port: int = 8080) -
     split = settings.get("split_mode") or model_cfg.get("split_mode")
     ngl = settings.get("gpu_offload_layers") or model_cfg.get("gpu_offload_layers", 99)
     devices = settings.get("devices") or model_cfg.get("devices")
+    spec_mtp = settings.get("speculative_mtp") if "speculative_mtp" in settings else model_cfg.get("speculative_mtp", False)
+    spec_n_max = settings.get("speculative_n_max") or model_cfg.get("speculative_n_max")
 
     args = ["-m", norm_gguf, "--port", str(port), "-ngl", str(ngl)]
+
+    if spec_mtp:
+        # Multi-Token Prediction: some models (e.g. Qwen3.8-27B) ship an MTP
+        # head in the weights themselves, so speculative decoding needs no
+        # separate draft model -- llama.cpp just has to be told to use it.
+        # `--spec-type` defaults to "none", so without this the MTP head is
+        # simply never used. A model without an MTP head ignores the request
+        # rather than failing, which is why this is safe to offer per-run.
+        args += ["--spec-type", "draft-mtp"]
+        if spec_n_max:
+            # How many tokens to draft per step. llama.cpp's default is 3;
+            # higher can help when the draft is usually accepted, and hurt
+            # when it isn't, so it's worth being able to measure both.
+            args += ["--spec-draft-n-max", str(spec_n_max)]
 
     if devices:
         # Restrict the run to specific GPU device ids (e.g. ["Vulkan0"]), as
