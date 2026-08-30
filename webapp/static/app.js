@@ -1921,18 +1921,35 @@ function updateTelemetryHUD(data) {
   const tokLabel = document.getElementById("stage-tok-label");
 
   // Both metrics are shown at once and each retains its last real reading.
-  // A prefill probe's decode rate is structurally tiny (8 tokens over a
-  // latency dominated by processing thousands of prompt tokens -- e.g. 1.2
-  // tok/s while the model genuinely decodes at ~61), so it is NOT written
-  // into the generation figure; likewise a decode task's prefill number is
-  // measured over a trivial prompt and is not representative, so it does not
-  // overwrite a real prefill reading.
-  if (stagePrefill && isPrefillProbe && data.live_prefill_tokens_per_sec != null) {
+  //
+  // Prefill is reported for EVERY task that has a real prompt, not only
+  // hardware_perf's prefill_* probes. Gating on those probes meant the figure
+  // read "-- tok/s" for the other seven suites even though the backend was
+  // sending a valid number the whole time (observed live: a run showed
+  // live_prefill_tokens_per_sec = 172 while the UI displayed nothing), and it
+  // never recovered after a page reload because those probes only run once at
+  // the start.
+  //
+  // The one exclusion is hardware_perf's decode_* probes: those use a
+  // deliberately trivial prompt to isolate decode speed, so their prefill
+  // figure is not representative and must not overwrite a real one.
+  const isDecodeProbe = liveId.startsWith("decode_");
+  if (stagePrefill && !isDecodeProbe && data.live_prefill_tokens_per_sec != null) {
     stagePrefill.textContent = `⚡ ${fmtNum(data.live_prefill_tokens_per_sec, 0)} tok/s`;
-    stagePrefill.title = `Prompt-processing throughput, from prefill probe '${liveId}'.`;
-    if (prefillLabel) prefillLabel.textContent = `Prefill Speed (${liveId.replace("prefill_", "")})`;
+    stagePrefill.title =
+      `Prompt-processing throughput on the last completed task ('${liveId}') ` +
+      `— prompt tokens divided by time-to-first-token. Updates per task, not continuously.`;
+    if (prefillLabel) {
+      prefillLabel.textContent = isPrefillProbe
+        ? `Prefill Speed (${liveId.replace("prefill_", "")})`
+        : "Prefill Speed";
+    }
   }
 
+  // A prefill probe's decode rate is structurally tiny (8 tokens over a
+  // latency dominated by processing thousands of prompt tokens -- e.g. 1.2
+  // tok/s while the model genuinely decodes at ~61), so it is never written
+  // into the generation figure.
   if (stageTokSec && !isPrefillProbe && data.live_tokens_per_sec != null) {
     stageTokSec.textContent = `⚡ ${fmtNum(data.live_tokens_per_sec, 1)} tok/s`;
     stageTokSec.title = `Decode speed from '${liveId}'. Updates per task, not continuously.`;
