@@ -21,15 +21,13 @@ endpoint). It exists to answer one question with real, reproducible data:
 data-sensitive or cost-sensitive work to a free local model instead of a
 paid frontier one, backed by numbers instead of a guess.
 
-![Compare view: head-to-head verdict with confidence intervals, a speed-vs-accuracy Pareto chart, and a per-suite radar chart](docs/compare_view.png)
+![The model library: every GGUF found on disk, with real size and quantization badges and a VRAM-fit bar sized against the GPUs actually installed](docs/dashboard.png)
 
 ## Choose the hardware, not just the model
 
 TaskMatch AI drives llama.cpp directly: it finds your installed compute
 backends, **verifies which ones actually run on your machine**, and lets you
 pick the exact GPU(s) a benchmark should use.
-
-![Model library: detected models with per-GPU VRAM fit, sized against the GPUs actually installed](docs/dashboard.png)
 
 Backends are not trusted on file presence — each candidate binary is launched
 with `--list-devices` and only offered if it genuinely works here. A backend
@@ -267,7 +265,8 @@ FastAPI backend + a plain HTML/CSS/JS frontend, no build step. Six tabs
 - **History & Analytics** — every saved run, filterable, with delete and
   one-click Markdown / PDF / raw-JSON export, and a problem inspector
   showing prompt, response, reasoning, and failure reason.
-- **Model Arena** — head-to-head accuracy comparison: a verdict banner that
+- **Model Arena** — head-to-head accuracy comparison ([example
+  output](docs/compare_view.png), captured on an earlier UI): a verdict banner that
   refuses to name a winner when confidence intervals overlap, a Pareto
   scatter (accuracy vs. speed), a per-suite radar chart, bar charts, and a
   sortable table. Comparisons only average suites both runs actually have.
